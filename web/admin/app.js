@@ -1,6 +1,10 @@
 const API_BASE = './api';
 const THEME_KEY = 'sealdice-logs-color-scheme';
+const VIEW_STYLE_KEY = 'sealdice-logs-view-style';
+const FONT_SIZE_KEY = 'sealdice-logs-font-size';
+const SIDEBAR_KEY = 'sealdice-logs-sidebar-collapsed';
 const POLL_INTERVAL_MS = 5000;
+const GROUP_WINDOW_SEC = 180;
 
 const SYSTEM_LABELS = {
   coc7: '克苏鲁的呼唤 7版',
@@ -15,15 +19,20 @@ const SYSTEM_LABELS = {
   general: '通用规则',
 };
 
+// 12 色色相充分拉开的浅/深双模式跑团染色调色盘
 const SPEAKER_PALETTE = [
-  'light-dark(#0f766e, #2dd4bf)',
-  'light-dark(#1d4ed8, #60a5fa)',
-  'light-dark(#7c3aed, #a78bfa)',
-  'light-dark(#be185d, #f472b6)',
-  'light-dark(#b45309, #fbbf24)',
-  'light-dark(#047857, #34d399)',
-  'light-dark(#0369a1, #38bdf8)',
-  'light-dark(#9333ea, #c084fc)',
+  'light-dark(#0f766e, #34d399)', // 碧绿
+  'light-dark(#c2410c, #fb923c)', // 暖橘
+  'light-dark(#1d4ed8, #60a5fa)', // 晴蓝
+  'light-dark(#be185d, #f472b6)', // 樱粉
+  'light-dark(#7c3aed, #c084fc)', // 紫罗兰
+  'light-dark(#a16207, #facc15)', // 琥珀黄
+  'light-dark(#0e7490, #22d3ee)', // 青湖
+  'light-dark(#b91c1c, #f87171)', // 珊瑚红
+  'light-dark(#4d7c0f, #a3e635)', // 苔绿
+  'light-dark(#4338ca, #818cf8)', // 靛青
+  'light-dark(#9d174d, #fb7185)', // 玫瑰
+  'light-dark(#0369a1, #38bdf8)', // 天青
 ];
 
 const state = {
@@ -56,6 +65,11 @@ const state = {
   pollTimer: null,
   pollInFlight: false,
   participantsCache: new Map(),
+  speakerColorMap: new Map(),
+  mentionNameMap: new Map(),
+  viewStyle: 'script',
+  fontSize: 'md',
+  sidebarCollapsed: false,
   links: [],
   editingLinkId: null,
   scopePickerTab: 'groups',
@@ -140,7 +154,7 @@ function formatTimeHms(sec) {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
 }
 
-function speakerColor(name) {
+function hashSpeakerColor(name) {
   const text = String(name || '匿名');
   let hash = 0;
   for (let i = 0; i < text.length; i += 1) {
@@ -149,9 +163,63 @@ function speakerColor(name) {
   return SPEAKER_PALETTE[Math.abs(hash) % SPEAKER_PALETTE.length];
 }
 
-function firstChar(name) {
-  const trimmed = String(name || '?').trim();
-  return Array.from(trimmed)[0] || '?';
+function speakerColor(name) {
+  const key = String(name || '匿名');
+  return state.speakerColorMap.get(key) || hashSpeakerColor(key);
+}
+
+function rebuildSpeakerAndMentionMaps(participants = []) {
+  const colorMap = new Map();
+  const mentionMap = new Map();
+  let slot = 0;
+
+  const registerUid = (uid, nick) => {
+    if (!uid || !nick) return;
+    const raw = String(uid).trim();
+    mentionMap.set(raw.toUpperCase(), nick);
+    const dashIdx = raw.lastIndexOf('-');
+    if (dashIdx !== -1 && dashIdx < raw.length - 1) {
+      mentionMap.set(raw.slice(dashIdx + 1).toUpperCase(), nick);
+    }
+    const colonIdx = raw.lastIndexOf(':');
+    if (colonIdx !== -1 && colonIdx < raw.length - 1) {
+      const tail = raw.slice(colonIdx + 1);
+      mentionMap.set(tail.toUpperCase(), nick);
+      const subDash = tail.lastIndexOf('-');
+      if (subDash !== -1 && subDash < tail.length - 1) {
+        mentionMap.set(tail.slice(subDash + 1).toUpperCase(), nick);
+      }
+    }
+  };
+
+  // 按发言频次顺次分配 12 种高辨识度颜色，同桌角色互不撞色
+  for (const p of participants) {
+    const nick = String(p.nickname || '').trim();
+    if (nick && !colorMap.has(nick)) {
+      colorMap.set(nick, SPEAKER_PALETTE[slot % SPEAKER_PALETTE.length]);
+      slot += 1;
+    }
+    registerUid(p.im_userid, nick);
+  }
+  // 顺手补录当前已加载消息里的 im_userid，防止 participants 尚未返回前漏译
+  for (const m of state.messages) {
+    const nick = String(m.nickname || '').trim();
+    if (nick && !colorMap.has(nick)) {
+      colorMap.set(nick, SPEAKER_PALETTE[slot % SPEAKER_PALETTE.length]);
+      slot += 1;
+    }
+    registerUid(m.im_userid, nick);
+  }
+
+  state.speakerColorMap = colorMap;
+  state.mentionNameMap = mentionMap;
+}
+
+function resolveOpenQqMentionsText(text) {
+  return String(text || '').replace(/<@([0-9A-Za-z_-]{8,64})>/g, (_full, id) => {
+    const name = state.mentionNameMap.get(String(id).toUpperCase());
+    return name ? `[@${name}]` : '[@成员]';
+  });
 }
 
 async function apiFetch(path, options = {}) {
@@ -174,6 +242,43 @@ async function apiFetch(path, options = {}) {
     throw new Error(errMsg);
   }
   return data;
+}
+
+/* ========= 阅读偏好持久化（视图 / 字号 / 侧栏折叠） ========= */
+function loadReadingPrefs() {
+  try {
+    const view = localStorage.getItem(VIEW_STYLE_KEY);
+    if (view === 'script' || view === 'cards') state.viewStyle = view;
+    const size = localStorage.getItem(FONT_SIZE_KEY);
+    if (size === 'sm' || size === 'md' || size === 'lg') state.fontSize = size;
+    state.sidebarCollapsed = localStorage.getItem(SIDEBAR_KEY) === '1';
+  } catch {}
+  applyReadingPrefs();
+}
+
+function applyReadingPrefs() {
+  const scroll = $('message-scroll');
+  if (scroll) {
+    scroll.dataset.viewStyle = state.viewStyle;
+    scroll.dataset.fontSize = state.fontSize;
+  }
+  document.querySelectorAll('[data-view-style]').forEach((btn) => {
+    const active = btn.dataset.viewStyle === state.viewStyle;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  document.querySelectorAll('[data-font-size]').forEach((btn) => {
+    const active = btn.dataset.fontSize === state.fontSize;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
+  const layout = $('tab-reader');
+  const collapseBtn = $('desktop-sidebar-btn');
+  if (layout) layout.classList.toggle('is-sidebar-collapsed', state.sidebarCollapsed);
+  if (collapseBtn) {
+    collapseBtn.classList.toggle('is-active', state.sidebarCollapsed);
+    collapseBtn.setAttribute('aria-pressed', String(state.sidebarCollapsed));
+  }
 }
 
 /* ========= 主题切换（遵循 dark-mode-toggle） ========= */
@@ -213,7 +318,7 @@ window.addEventListener('storage', (event) => {
   }
 });
 
-/* ========= Dialog 顶层动画与回退（遵循 light-dismiss + animate-to-from-top-layer） ========= */
+/* ========= Dialog 顶层动画与回退 ========= */
 let cachedDisplayTransition;
 function canTransitionDisplay() {
   if (cachedDisplayTransition !== undefined) return cachedDisplayTransition;
@@ -471,6 +576,8 @@ function buildMessageQueryParams(extra = {}) {
 async function selectLog(log) {
   state.activeLog = log;
   state.speakerFilter = '';
+  state.speakerColorMap = new Map();
+  state.mentionNameMap = new Map();
   $('speaker-filter-select').value = '';
   renderLogList();
 
@@ -484,17 +591,23 @@ async function selectLog(log) {
   $('active-log-group').textContent = log.display_group_name;
   $('active-log-stats').textContent = `日志 #${log.id} · 共 ${formatNumber(log.size)} 条 · 更新于 ${formatDateTime(log.updated_at)}`;
 
-  await Promise.all([loadMessages({ mode: 'initial' }), loadSpeakerOptions(log.id)]);
+  // 先并发拉取参与者映射与消息，完成后统一按完整映射渲染，保证 12 色不撞色且 <@HEX> 即刻译名
+  await Promise.all([loadSpeakerOptions(log.id, false), loadMessages({ mode: 'initial' })]);
+  if (state.activeLog?.id === log.id) {
+    rebuildSpeakerAndMentionMaps(state.participantsCache.get(log.id)?.participants || []);
+    renderMessages();
+  }
 }
 
-async function loadSpeakerOptions(logId) {
+async function loadSpeakerOptions(logId, rerender = true) {
   try {
     const data = await apiFetch(`/logs/${logId}/participants`);
     state.participantsCache.set(logId, data);
     if (state.activeLog?.id !== logId) return;
+    rebuildSpeakerAndMentionMaps(data.participants || []);
     const select = $('speaker-filter-select');
     const prev = state.speakerFilter;
-    select.innerHTML = '<option value="">全部发言人</option>';
+    select.innerHTML = '<option value="">全部角色</option>';
     for (const p of data.participants || []) {
       const opt = document.createElement('option');
       opt.value = p.nickname;
@@ -502,6 +615,7 @@ async function loadSpeakerOptions(logId) {
       select.appendChild(opt);
     }
     select.value = prev;
+    if (rerender && state.messages.length > 0) renderMessages();
   } catch {
     // 发言人下拉加载失败不阻断正文阅读
   }
@@ -526,6 +640,7 @@ async function loadMessages({ mode = 'initial' } = {}) {
       state.messages = [...fresh, ...state.messages];
       state.firstId = data.first_id ?? state.firstId;
       state.hasOlder = Boolean(data.has_older);
+      rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
       renderMessages();
       scrollEl.scrollTop = prevTop + (scrollEl.scrollHeight - prevHeight);
       updateStatusbar();
@@ -552,6 +667,7 @@ async function loadMessages({ mode = 'initial' } = {}) {
           state.messages = [...state.messages, ...fresh];
           state.lastId = fresh[fresh.length - 1].id;
           if (!state.firstId) state.firstId = fresh[0].id;
+          rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
           renderMessages();
           if (nearBottom) {
             scrollEl.scrollTop = scrollEl.scrollHeight;
@@ -576,6 +692,7 @@ async function loadMessages({ mode = 'initial' } = {}) {
     state.hasOlder = Boolean(data.has_older);
     state.scannedCount = data.scanned_count || 0;
     state.filteredOut = data.filtered_out || { ooc: 0, ic: 0, dice: 0, speaker: 0, query: 0 };
+    rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
     renderMessages();
     updateStatusbar();
     scrollEl.scrollTop = scrollEl.scrollHeight;
@@ -585,21 +702,72 @@ async function loadMessages({ mode = 'initial' } = {}) {
   }
 }
 
-function renderMessageBody(container, text) {
-  const tokenRe = /(\[(?:图片|语音|视频|表情|回复|合并转发|@[^\]]+)\])/g;
+function appendInlineChips(parent, text) {
+  const tokenRe = /(\[(?:图片|语音|视频|表情|回复|合并转发|@[^\]]+)\]|<@[0-9A-Za-z_-]{8,64}>)/g;
   const parts = String(text || '').split(tokenRe);
   for (const part of parts) {
     if (!part) continue;
-    if (tokenRe.test(part)) {
+    const openQqMatch = /^<@([0-9A-Za-z_-]{8,64})>$/.exec(part);
+    if (openQqMatch) {
+      const rawId = openQqMatch[1];
+      const resolved = state.mentionNameMap.get(rawId.toUpperCase());
       const chip = document.createElement('span');
-      chip.className = 'cq-chip';
-      chip.textContent = part;
-      container.appendChild(chip);
+      chip.className = 'cq-chip is-mention';
+      chip.textContent = resolved ? `@${resolved}` : '@成员';
+      chip.title = resolved ? `${resolved} (${rawId})` : `成员标识 ${rawId}`;
+      parent.appendChild(chip);
+    } else if (/^\[(?:图片|语音|视频|表情|回复|合并转发|@[^\]]+)\]$/.test(part)) {
+      const chip = document.createElement('span');
+      chip.className = `cq-chip${part.startsWith('[@') ? ' is-mention' : ''}`;
+      chip.textContent = part.startsWith('[@') ? part.slice(1, -1) : part;
+      parent.appendChild(chip);
     } else {
-      container.appendChild(document.createTextNode(part));
+      parent.appendChild(document.createTextNode(part));
     }
-    tokenRe.lastIndex = 0;
   }
+}
+
+function renderStructuredMessageBody(container, text, isOocOrDice) {
+  const lines = String(text || '').split(/\r?\n/);
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      const spacer = document.createElement('div');
+      spacer.className = 'msg-line is-blank';
+      container.appendChild(spacer);
+      continue;
+    }
+
+    const p = document.createElement('p');
+    p.className = 'msg-line';
+
+    if (!isOocOrDice && /^[#＃](?!\d+\s*$)/.test(trimmed)) {
+      p.classList.add('is-action');
+      const hashSpan = document.createElement('span');
+      hashSpan.className = 'action-hash';
+      hashSpan.textContent = '#';
+      p.appendChild(hashSpan);
+      appendInlineChips(p, trimmed.slice(1).trimStart());
+    } else if (!isOocOrDice && /^【[\s\S]+】$/.test(trimmed)) {
+      p.classList.add('is-thought');
+      appendInlineChips(p, trimmed);
+    } else {
+      appendInlineChips(p, rawLine);
+    }
+    container.appendChild(p);
+  }
+}
+
+function shouldGroupWithPrevious(prev, curr, prevDay, currDay) {
+  if (!prev) return false;
+  if (prevDay !== currDay) return false;
+  if (prev.channel !== curr.channel) return false;
+  // 掷骰指令/检定单独保持清晰视觉锚点，不与普通台词合并
+  if (prev.kind === 'dice_result' || prev.kind === 'dice_command') return false;
+  if (curr.kind === 'dice_result' || curr.kind === 'dice_command') return false;
+  if ((prev.nickname || '') !== (curr.nickname || '')) return false;
+  const gap = Math.abs((curr.time || 0) - (prev.time || 0));
+  return gap <= GROUP_WINDOW_SEC;
 }
 
 function renderMessages() {
@@ -609,37 +777,45 @@ function renderMessages() {
   $('message-empty').hidden = state.messages.length > 0;
 
   let prevDay = '';
+  let prevMsg = null;
   const total = state.messages.length;
-  // 首屏底部可见约 15 条不施加 content-visibility: auto，避免影响首屏滚动落点与初始渲染
+  // 首屏底部约 15 条不施加 content-visibility: auto，避免影响首屏滚动落点
   const deferBeforeIndex = Math.max(0, total - 15);
 
   const frag = document.createDocumentFragment();
   state.messages.forEach((msg, index) => {
     const day = formatDateShort(msg.time);
     if (day !== prevDay) {
-      prevDay = day;
       const div = document.createElement('div');
       div.className = 'day-divider';
       div.textContent = day;
       frag.appendChild(div);
     }
 
+    const grouped = shouldGroupWithPrevious(prevMsg, msg, prevDay, day);
+    prevDay = day;
+    prevMsg = msg;
+
     const row = document.createElement('article');
     const isOoc = msg.channel === 'ooc';
     const isDice = msg.kind === 'dice_result' || msg.kind === 'dice_command';
-    row.className = `msg-row${isOoc ? ' is-ooc' : ''}${isDice ? ' is-dice' : ''}${index < deferBeforeIndex ? ' is-deferred' : ''}`;
+    row.className = [
+      'msg-row',
+      isOoc ? 'is-ooc' : '',
+      isDice ? 'is-dice' : '',
+      msg.kind === 'dice_command' ? 'is-dice-cmd' : '',
+      grouped ? 'is-grouped' : '',
+      index < deferBeforeIndex ? 'is-deferred' : '',
+    ].filter(Boolean).join(' ');
     row.style.setProperty('--speaker-color', speakerColor(msg.nickname));
-
-    const avatar = document.createElement('div');
-    avatar.className = 'msg-avatar';
-    avatar.setAttribute('aria-hidden', 'true');
-    avatar.textContent = isDice && msg.kind === 'dice_result' ? '骰' : firstChar(msg.nickname);
-
-    const main = document.createElement('div');
-    main.className = 'msg-main';
 
     const head = document.createElement('div');
     head.className = 'msg-head';
+
+    const dot = document.createElement('span');
+    dot.className = 'msg-speaker-dot';
+    dot.setAttribute('aria-hidden', 'true');
+    head.appendChild(dot);
 
     const speakerBtn = document.createElement('button');
     speakerBtn.type = 'button';
@@ -676,22 +852,31 @@ function renderMessages() {
     timeEl.title = formatDateTime(msg.time);
     head.appendChild(timeEl);
 
-    const idBtn = document.createElement('button');
-    idBtn.type = 'button';
-    idBtn.className = 'msg-id-btn';
-    idBtn.textContent = `#${msg.id}`;
-    idBtn.title = '点击复制消息游标 ID';
-    idBtn.addEventListener('click', () => {
-      void copyText(String(msg.id), `已复制消息游标 #${msg.id}`);
-    });
-    head.appendChild(idBtn);
+    const makeIdBtn = () => {
+      const idBtn = document.createElement('button');
+      idBtn.type = 'button';
+      idBtn.className = 'msg-id-btn';
+      idBtn.textContent = `#${msg.id}`;
+      idBtn.title = '点击复制消息游标 ID';
+      idBtn.addEventListener('click', () => {
+        void copyText(String(msg.id), `已复制消息游标 #${msg.id}`);
+      });
+      return idBtn;
+    };
+    head.appendChild(makeIdBtn());
 
-    const body = document.createElement('p');
+    const inlineMeta = document.createElement('div');
+    inlineMeta.className = 'msg-inline-meta';
+    const miniTime = document.createElement('span');
+    miniTime.className = 'msg-time';
+    miniTime.textContent = formatTimeHms(msg.time);
+    inlineMeta.append(miniTime, makeIdBtn());
+
+    const body = document.createElement('div');
     body.className = 'msg-body';
-    renderMessageBody(body, msg.message);
+    renderStructuredMessageBody(body, msg.message, isOoc || isDice);
 
-    main.append(head, body);
-    row.append(avatar, main);
+    row.append(head, inlineMeta, body);
     frag.appendChild(row);
   });
 
@@ -759,7 +944,8 @@ async function copyFilteredTranscript() {
   }
   const lines = state.messages.map((m) => {
     const tag = m.channel === 'ooc' ? '场外' : (m.kind === 'dice_result' ? '检定' : '场内');
-    return `[${formatDateTime(m.time)} | ${tag}] ${m.nickname}: ${m.message}`;
+    const cleanText = resolveOpenQqMentionsText(m.message);
+    return `[${formatDateTime(m.time)} | ${tag}] ${m.nickname}: ${cleanText}`;
   });
   await copyText(lines.join('\n'), `已复制 ${lines.length} 条筛选记录`);
 }
@@ -783,6 +969,7 @@ async function openParticipantsDialog() {
   try {
     const data = await apiFetch(`/logs/${state.activeLog.id}/participants`);
     state.participantsCache.set(state.activeLog.id, data);
+    rebuildSpeakerAndMentionMaps(data.participants || []);
     const b = data.breakdown || {};
     const cells = [
       ['总消息数', data.total],
@@ -1035,7 +1222,6 @@ function renderScopeLists() {
 
   const q = state.scopeSearch.trim().toLowerCase();
 
-  // 渲染群列表
   const groupsWrap = $('scope-groups-list');
   groupsWrap.innerHTML = '';
   const filteredGroups = state.groups.filter((g) => !q
@@ -1069,7 +1255,6 @@ function renderScopeLists() {
     groupsWrap.innerHTML = '<div class="muted-text" style="padding:12px;text-align:center;">未匹配到群聊</div>';
   }
 
-  // 渲染日志列表
   const logsWrap = $('scope-logs-list');
   logsWrap.innerHTML = '';
   const filteredLogs = state.scopeLogsCatalog.filter((l) => !q
@@ -1218,6 +1403,28 @@ function openGuideDialog(link) {
 function bindEvents() {
   $('theme-toggle').addEventListener('click', toggleTheme);
 
+  $('desktop-sidebar-btn').addEventListener('click', () => {
+    state.sidebarCollapsed = !state.sidebarCollapsed;
+    try { localStorage.setItem(SIDEBAR_KEY, state.sidebarCollapsed ? '1' : '0'); } catch {}
+    applyReadingPrefs();
+  });
+
+  document.querySelectorAll('[data-view-style]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.viewStyle = btn.dataset.viewStyle;
+      try { localStorage.setItem(VIEW_STYLE_KEY, state.viewStyle); } catch {}
+      applyReadingPrefs();
+    });
+  });
+
+  document.querySelectorAll('[data-font-size]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.fontSize = btn.dataset.fontSize;
+      try { localStorage.setItem(FONT_SIZE_KEY, state.fontSize); } catch {}
+      applyReadingPrefs();
+    });
+  });
+
   $('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const errEl = $('login-error');
@@ -1277,10 +1484,10 @@ function bindEvents() {
   $('load-more-logs-btn').addEventListener('click', () => void loadLogs(false));
 
   // 右侧阅读工具条
-  document.querySelectorAll('.seg-btn').forEach((btn) => {
+  document.querySelectorAll('[data-filter-mode]').forEach((btn) => {
     btn.addEventListener('click', () => {
       state.msgFilterMode = btn.dataset.filterMode;
-      document.querySelectorAll('.seg-btn').forEach((b) => {
+      document.querySelectorAll('[data-filter-mode]').forEach((b) => {
         const active = b.dataset.filterMode === state.msgFilterMode;
         b.classList.toggle('is-active', active);
         b.setAttribute('aria-pressed', String(active));
@@ -1340,7 +1547,7 @@ function bindEvents() {
     state.customStart = '';
     state.customEnd = '';
     state.msgQuery = '';
-    document.querySelectorAll('.seg-btn').forEach((b) => {
+    document.querySelectorAll('[data-filter-mode]').forEach((b) => {
       const active = b.dataset.filterMode === 'all';
       b.classList.toggle('is-active', active);
       b.setAttribute('aria-pressed', String(active));
@@ -1418,6 +1625,7 @@ function bindEvents() {
 }
 
 async function bootstrap() {
+  loadReadingPrefs();
   bindEvents();
   try {
     const status = await apiFetch('/auth/status');
