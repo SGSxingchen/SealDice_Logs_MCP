@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { classifyLogItem, cleanCqMessage, filterReason } from '../dist/message-classifier.js';
+import { classifyLogItem, cleanCqMessage, filterReason, resolveMentions } from '../dist/message-classifier.js';
 
 const classify = (message, is_dice = 0, prefixes) => classifyLogItem({ message, is_dice }, prefixes);
 
@@ -50,4 +50,20 @@ test('场内、场外、全量与掷骰选项的每种组合只记一个过滤�
   for (const [mode, includeDice, expected] of matrix) {
     assert.deepEqual(kinds.map((item) => filterReason(item, mode, includeDice)), expected);
   }
+});
+
+test('OpenQQ 十六进制艾特与纯数字艾特自动翻译并兼容前置场外识别', () => {
+  const names = new Map([
+    ['FF834522288AB2D2993970BE14970D3A', '牛奶泡LanStarD'],
+    ['853304398', '牛奶泡LanStarD'],
+  ]);
+  assert.equal(
+    resolveMentions('<@FF834522288AB2D2993970BE14970D3A> 你好 <@11112222333344445555666677778888>', names),
+    '[@牛奶泡LanStarD] 你好 [@成员]',
+  );
+  assert.equal(resolveMentions('[@853304398] 和 [@999999]', names), '[@牛奶泡LanStarD] 和 [@999999]');
+  assert.deepEqual(
+    classify('<@FF834522288AB2D2993970BE14970D3A>（先过个侦查吧）'),
+    { channel: 'ooc', kind: 'ooc', isDiceResult: false },
+  );
 });

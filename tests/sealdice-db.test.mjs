@@ -157,3 +157,17 @@ test('检索附上前后上下文、移除标记始终生效、参团统计及�
   const overview = await db.getOverview();
   assert.deepEqual(overview, { totalLogs: 4, totalMessages: 10, activeRecordingCount: 1, groupCount: 2, latestMessageAt: now - 20 });
 });
+
+test('后端全链路将 OpenQQ <@HEX> 与数字 CQ 艾特自动翻译为角色昵称且支持按译名检索', async (t) => {
+  const { db, insertMessage } = openFixture(t);
+  insertMessage({ id: 50, nickname: '牛奶泡LanStarD', im_userid: '4019653007-FF834522288AB2D2993970BE14970D3A', message: '我刚进镇子' });
+  insertMessage({ id: 51, nickname: '雨霁', im_userid: '4019653007-E6EEE8D760880A84E46FB7366066C251', message: '<@FF834522288AB2D2993970BE14970D3A> 你好，另外 <@AABBCCDDEEFF00112233445566778899> 在吗' });
+
+  const page = await db.getMessages(ALL_SCOPE, { log_id: LOG_A, after_id: 50, include_raw_cq: true });
+  assert.equal(page.items.length, 1);
+  assert.equal(page.items[0].message, '[@牛奶泡LanStarD] 你好，另外 [@成员] 在吗');
+  assert.match(page.items[0].raw_cq, /<@FF834522288AB2D2993970BE14970D3A>/);
+
+  const searched = await db.searchMessages(ALL_SCOPE, { log_id: LOG_A, query: '牛奶泡LanStarD', context_lines: 0 });
+  assert.deepEqual(searched.matches.map((m) => m.message.id), [51]);
+});

@@ -20,6 +20,7 @@
 
   <!-- 登录页 -->
   <section id="login-view" class="login-shell" hidden>
+    <div class="ambient-aurora login-aurora" aria-hidden="true"></div>
     <div class="login-card">
       <div class="login-brand">
         <div class="brand-mark" aria-hidden="true">
@@ -42,7 +43,7 @@
           <input id="login-password" class="input" type="password" autocomplete="current-password" placeholder="请输入管理台口令" required>
         </label>
         <p id="login-error" class="form-error" role="alert" hidden></p>
-        <button id="login-submit" class="btn btn-primary btn-block" type="submit">进入日志台</button>
+        <button id="login-submit" class="btn btn-primary btn-block has-ripple" type="submit">进入日志台</button>
       </form>
       <p class="login-hint">会话采用加密安全 Cookie 保存，默认 7 天内免重复登录。</p>
     </div>
@@ -52,14 +53,14 @@
   <div id="app-shell" class="app-shell" hidden>
     <header class="topbar">
       <div class="topbar-left">
-        <button id="mobile-drawer-btn" class="icon-btn mobile-only" type="button" title="展开日志目录" aria-label="展开日志目录">
+        <button id="mobile-drawer-btn" class="icon-btn mobile-only has-ripple" type="button" title="展开日志目录" aria-label="展开日志目录">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
             <line x1="4" y1="6" x2="20" y2="6"/>
             <line x1="4" y1="12" x2="20" y2="12"/>
             <line x1="4" y1="18" x2="20" y2="18"/>
           </svg>
         </button>
-        <button id="desktop-sidebar-btn" class="icon-btn desktop-only" type="button" title="收起或展开左侧目录（沉浸阅读）" aria-label="收起或展开左侧目录" aria-pressed="false">
+        <button id="desktop-sidebar-btn" class="icon-btn desktop-only has-ripple" type="button" title="收起或展开左侧目录（沉浸阅读）" aria-label="收起或展开左侧目录" aria-pressed="false">
           <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
             <rect x="3" y="4" width="18" height="16" rx="2"/>
             <line x1="9" y1="4" x2="9" y2="20"/>
@@ -69,7 +70,8 @@
           <span class="brand-dot" aria-hidden="true"></span>
           <span class="brand-name">海豹骰跑团日志</span>
         </div>
-        <nav class="nav-tabs" aria-label="主功能切换">
+        <nav class="nav-tabs has-slider" aria-label="主功能切换">
+          <span class="seg-slider" aria-hidden="true"></span>
           <button class="tab-btn is-active" type="button" data-tab="reader">日志阅览</button>
           <button class="tab-btn" type="button" data-tab="links">
             MCP 链接
@@ -83,7 +85,7 @@
           <span class="pulse-dot" aria-hidden="true"></span>
           <span id="recording-pill-text">0 个团记录中</span>
         </div>
-        <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换浅色或深色主题" title="切换浅色 / 深色主题">
+        <button id="theme-toggle" class="icon-btn has-ripple" type="button" aria-label="切换浅色或深色主题" title="切换浅色 / 深色主题">
           <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
             <circle cx="12" cy="12" r="4"/>
             <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41"/>
@@ -94,7 +96,7 @@
           <span class="sr-only icon-sun">切换至浅色外观</span>
           <span class="sr-only icon-moon">切换至深色外观</span>
         </button>
-        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">退出</button>
+        <button id="logout-btn" class="btn btn-ghost btn-sm has-ripple" type="button">退出</button>
       </div>
     </header>
 
@@ -115,7 +117,7 @@
               <select id="group-filter-select" class="select select-compact" aria-label="按群筛选">
                 <option value="">全部群聊</option>
               </select>
-              <button id="active-only-btn" class="chip-toggle" type="button" aria-pressed="false" title="仅显示海豹骰当前开启记录的日志">
+              <button id="active-only-btn" class="chip-toggle has-ripple" type="button" aria-pressed="false" title="仅显示海豹骰当前开启记录的日志">
                 <span class="chip-dot" aria-hidden="true"></span>
                 记录中
               </button>
@@ -126,14 +128,16 @@
             </div>
           </div>
 
-          <div id="log-list" class="log-list" role="listbox" aria-label="日志目录"></div>
+          <div id="log-list" class="log-list custom-scroll" role="listbox" aria-label="日志目录"></div>
 
           <div id="log-list-footer" class="sidebar-foot" hidden>
-            <button id="load-more-logs-btn" class="btn btn-secondary btn-sm btn-block" type="button">加载更多历史日志</button>
+            <button id="load-more-logs-btn" class="btn btn-secondary btn-sm btn-block has-ripple" type="button">加载更多历史日志</button>
           </div>
         </aside>
 
         <section class="reader-stage" aria-label="跑团对话内容">
+          <div class="ambient-aurora reader-aurora" aria-hidden="true"></div>
+
           <!-- 未选日志空状态 -->
           <div id="reader-empty" class="empty-stage">
             <div class="empty-icon" aria-hidden="true">
@@ -144,7 +148,7 @@
               </svg>
             </div>
             <h2>选择一份跑团日志开始阅览</h2>
-            <p>支持按场内（IC）、场外（OOC）和掷骰检定实时筛选，沉浸式剧本排版随时同步最新发言。</p>
+            <p>支持从开篇顺读或追更最新动态，按场内、场外与掷骰检定丝滑筛选。</p>
           </div>
 
           <!-- 已选日志工作区 -->
@@ -165,11 +169,18 @@
                 </div>
                 <div class="reader-actions">
                   <div class="reading-prefs" role="group" aria-label="阅读排版偏好">
-                    <div class="segmented segmented-mini" role="group" aria-label="视图样式">
+                    <div class="segmented segmented-mini has-slider" role="group" aria-label="阅读起点">
+                      <span class="seg-slider" aria-hidden="true"></span>
+                      <button class="seg-btn is-active" type="button" data-read-anchor="latest" aria-pressed="true" title="从最新记录往上回溯">最新</button>
+                      <button class="seg-btn" type="button" data-read-anchor="oldest" aria-pressed="false" title="从开篇第一句顺着往后读">开篇</button>
+                    </div>
+                    <div class="segmented segmented-mini has-slider" role="group" aria-label="视图样式">
+                      <span class="seg-slider" aria-hidden="true"></span>
                       <button class="seg-btn is-active" type="button" data-view-style="script" aria-pressed="true" title="无外框连续剧本阅读流">剧本</button>
                       <button class="seg-btn" type="button" data-view-style="cards" aria-pressed="false" title="每条独立卡片">卡片</button>
                     </div>
-                    <div class="segmented segmented-mini" role="group" aria-label="正文字号">
+                    <div class="segmented segmented-mini has-slider" role="group" aria-label="正文字号">
+                      <span class="seg-slider" aria-hidden="true"></span>
                       <button class="seg-btn" type="button" data-font-size="sm" aria-pressed="false" title="紧凑字号">小</button>
                       <button class="seg-btn is-active" type="button" data-font-size="md" aria-pressed="true" title="默认舒适字号">中</button>
                       <button class="seg-btn" type="button" data-font-size="lg" aria-pressed="false" title="放大护眼字号">大</button>
@@ -178,39 +189,49 @@
 
                   <span class="action-divider" aria-hidden="true"></span>
 
-                  <button id="auto-poll-btn" class="btn btn-subtle btn-sm" type="button" aria-pressed="false" title="每 5 秒静默增量拉取最新消息">
+                  <button id="auto-poll-btn" class="btn btn-subtle btn-sm has-ripple" type="button" aria-pressed="false" title="每 5 秒静默增量拉取最新消息">
                     <span class="live-indicator" aria-hidden="true"></span>
                     追踪
                   </button>
-                  <button id="refresh-messages-btn" class="btn btn-subtle btn-sm" type="button" title="手动拉取最新消息">刷新</button>
-                  <button id="participants-btn" class="btn btn-subtle btn-sm" type="button">角色</button>
-                  <button id="copy-filtered-btn" class="btn btn-subtle btn-sm" type="button">复制</button>
-                  <button id="export-txt-btn" class="btn btn-primary btn-sm" type="button">导出</button>
+                  <button id="refresh-messages-btn" class="icon-btn icon-btn-sm has-ripple" type="button" title="刷新最新消息" aria-label="刷新最新消息">
+                    <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M21 12a9 9 0 1 1-2.64-6.36"/>
+                      <path d="M21 3v6h-6"/>
+                    </svg>
+                  </button>
+                  <button id="participants-btn" class="btn btn-subtle btn-sm has-ripple" type="button">角色</button>
+                  <button id="copy-filtered-btn" class="btn btn-subtle btn-sm has-ripple" type="button">复制</button>
+                  <button id="export-txt-btn" class="btn btn-primary btn-sm has-ripple" type="button">导出</button>
                 </div>
               </div>
 
               <div class="filter-bar">
-                <div class="segmented" role="group" aria-label="场内场外筛选">
-                  <button class="seg-btn is-active" type="button" data-filter-mode="all" aria-pressed="true">全部</button>
-                  <button class="seg-btn" type="button" data-filter-mode="ic" aria-pressed="false">仅场内</button>
-                  <button class="seg-btn" type="button" data-filter-mode="ooc" aria-pressed="false">仅场外</button>
+                <div class="filter-group-mode">
+                  <div class="segmented has-slider" role="group" aria-label="场内场外筛选">
+                    <span class="seg-slider" aria-hidden="true"></span>
+                    <button class="seg-btn is-active" type="button" data-filter-mode="all" aria-pressed="true">全部</button>
+                    <button class="seg-btn" type="button" data-filter-mode="ic" aria-pressed="false">仅场内</button>
+                    <button class="seg-btn" type="button" data-filter-mode="ooc" aria-pressed="false">仅场外</button>
+                  </div>
+
+                  <button id="include-dice-btn" class="chip-toggle is-active has-ripple" type="button" aria-pressed="true" title="开关掷骰指令与海豹检定结果">
+                    含掷骰
+                  </button>
                 </div>
 
-                <button id="include-dice-btn" class="chip-toggle is-active" type="button" aria-pressed="true" title="开关掷骰指令与海豹检定结果">
-                  含掷骰
-                </button>
+                <div class="filter-group-selects">
+                  <select id="speaker-filter-select" class="select select-compact filter-speaker" aria-label="按发言人筛选">
+                    <option value="">全部角色</option>
+                  </select>
 
-                <select id="speaker-filter-select" class="select select-compact filter-speaker" aria-label="按发言人筛选">
-                  <option value="">全部角色</option>
-                </select>
-
-                <select id="time-preset-select" class="select select-compact filter-time" aria-label="按时间范围筛选">
-                  <option value="all">全部时间</option>
-                  <option value="30">最近 30 分钟</option>
-                  <option value="120">最近 2 小时</option>
-                  <option value="today">今天</option>
-                  <option value="custom">自定义时间段…</option>
-                </select>
+                  <select id="time-preset-select" class="select select-compact filter-time" aria-label="按时间范围筛选">
+                    <option value="all">全部时间</option>
+                    <option value="30">最近 30 分钟</option>
+                    <option value="120">最近 2 小时</option>
+                    <option value="today">今天</option>
+                    <option value="custom">自定义时间段…</option>
+                  </select>
+                </div>
 
                 <div class="search-box filter-msg-search">
                   <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
@@ -230,22 +251,84 @@
                   <span>截止</span>
                   <input id="custom-end-input" class="input input-compact" type="datetime-local">
                 </label>
-                <button id="apply-custom-time-btn" class="btn btn-primary btn-sm" type="button">应用时间段</button>
+                <button id="apply-custom-time-btn" class="btn btn-primary btn-sm has-ripple" type="button">应用时间段</button>
                 <button id="clear-custom-time-btn" class="btn btn-ghost btn-sm" type="button">清除</button>
               </div>
             </div>
 
-            <div id="message-scroll" class="message-scroll" data-view-style="script" data-font-size="md">
+            <!-- 丝滑阅读进度条 -->
+            <div class="read-progress-track" aria-hidden="true">
+              <div id="read-progress-bar" class="read-progress-bar"></div>
+            </div>
+
+            <!-- 长卷轴双向无感滚动容器 -->
+            <div id="message-scroll" class="message-scroll custom-scroll" tabindex="0" data-view-style="script" data-font-size="md">
+              <div id="scroll-top-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
+
               <div class="transcript-paper">
-                <div id="load-older-wrap" class="load-older-wrap" hidden>
-                  <button id="load-older-btn" class="btn btn-subtle btn-sm" type="button">↑ 加载更早的跑团记录</button>
+                <!-- 顶部自动加载哨兵与手动入口 -->
+                <div id="top-edge-bar" class="edge-loader">
+                  <button id="load-older-btn" class="edge-btn has-ripple" type="button" hidden>
+                    <span class="edge-spinner" aria-hidden="true"></span>
+                    <span id="load-older-label">↑ 加载更早的跑团记录</span>
+                  </button>
+                  <div id="top-origin-mark" class="story-boundary" hidden>
+                    <span>故事自此启幕</span>
+                  </div>
                 </div>
 
                 <div id="message-list" class="message-list" aria-live="off"></div>
 
                 <div id="message-empty" class="message-empty" hidden>
                   <p>当前筛选条件下暂无符合的消息。</p>
-                  <button id="reset-msg-filters-btn" class="btn btn-secondary btn-sm" type="button">重置筛选条件</button>
+                  <button id="reset-msg-filters-btn" class="btn btn-secondary btn-sm has-ripple" type="button">重置筛选条件</button>
+                </div>
+
+                <!-- 底部自动加载哨兵（从开篇顺读时向下自动续载） -->
+                <div id="bottom-edge-bar" class="edge-loader">
+                  <button id="load-newer-btn" class="edge-btn has-ripple" type="button" hidden>
+                    <span class="edge-spinner" aria-hidden="true"></span>
+                    <span id="load-newer-label">↓ 加载后续跑团记录</span>
+                  </button>
+                  <div id="bottom-end-mark" class="story-boundary" hidden>
+                    <span>已衔接至最新一幕</span>
+                  </div>
+                </div>
+              </div>
+
+              <div id="scroll-bottom-sentinel" class="scroll-sentinel" aria-hidden="true"></div>
+
+              <!-- 悬浮章节快跳与滚动控制舱（scroll-state + IntersectionObserver 双支持） -->
+              <div class="scroll-dock-anchor">
+                <div id="chapter-panel" class="chapter-panel" hidden>
+                  <div class="chapter-panel-head">
+                    <span>日期与位置快跳</span>
+                    <span id="chapter-loaded-hint" class="muted-text"></span>
+                  </div>
+                  <div class="chapter-quick-jumps">
+                    <button id="jump-story-start-btn" class="btn btn-subtle btn-sm has-ripple" type="button">直达开篇首句</button>
+                    <button id="jump-story-latest-btn" class="btn btn-subtle btn-sm has-ripple" type="button">直达最新动态</button>
+                  </div>
+                  <div id="chapter-days-list" class="chapter-days-list custom-scroll"></div>
+                </div>
+
+                <div class="scroll-dock" role="toolbar" aria-label="阅读定位控制">
+                  <button id="chapter-toggle-btn" class="dock-pill has-ripple" type="button" aria-expanded="false" title="展开日期章节快速定位">
+                    <span id="dock-current-day">目录</span>
+                    <span class="dock-sep" aria-hidden="true">·</span>
+                    <span id="dock-percent">100%</span>
+                  </button>
+                  <button id="dock-top-btn" class="dock-circle dock-top has-ripple" type="button" title="回到已载顶部" aria-label="回到已载顶部">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="m18 15-6-6-6 6"/>
+                    </svg>
+                  </button>
+                  <button id="dock-bottom-btn" class="dock-circle dock-bottom has-ripple" type="button" title="滑到最新底部" aria-label="滑到最新底部">
+                    <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="m6 9 6 6 6-6"/>
+                    </svg>
+                    <span id="dock-unread-badge" class="dock-unread" hidden>0</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -294,7 +377,7 @@
             <h2 class="section-title">MCP 接入链接与权限范围</h2>
             <p class="section-desc">每条链接拥有独立加密令牌，可设为「全部日志」或限定只看指定群/跑团日志；修改范围或停用后立即生效。</p>
           </div>
-          <button id="create-link-btn" class="btn btn-primary" type="button">新建 MCP 链接</button>
+          <button id="create-link-btn" class="btn btn-primary has-ripple" type="button">新建 MCP 链接</button>
         </div>
 
         <div id="links-list" class="links-list"></div>
@@ -371,8 +454,8 @@
             <input id="scope-search-input" class="input input-compact" type="search" placeholder="输入群名、群号或日志名快速筛选…">
           </div>
 
-          <div id="scope-groups-list" class="scope-check-list"></div>
-          <div id="scope-logs-list" class="scope-check-list" hidden></div>
+          <div id="scope-groups-list" class="scope-check-list custom-scroll"></div>
+          <div id="scope-logs-list" class="scope-check-list custom-scroll" hidden></div>
 
           <p class="scope-help">只要满足“所属群在授权列表中”或“该日志在授权列表中”任一条件即允许访问；至少勾选 1 项。</p>
         </div>
@@ -381,7 +464,7 @@
 
         <footer class="modal-actions">
           <button class="btn btn-secondary" type="button" data-close-dialog="link-dialog">取消</button>
-          <button id="link-form-submit" class="btn btn-primary" type="submit">保存并签发链接</button>
+          <button id="link-form-submit" class="btn btn-primary has-ripple" type="submit">保存并签发链接</button>
         </footer>
       </form>
     </div>

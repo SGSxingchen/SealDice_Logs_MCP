@@ -5,6 +5,7 @@ const FONT_SIZE_KEY = 'sealdice-logs-font-size';
 const SIDEBAR_KEY = 'sealdice-logs-sidebar-collapsed';
 const POLL_INTERVAL_MS = 5000;
 const GROUP_WINDOW_SEC = 180;
+const AUTO_LOAD_THRESHOLD_PX = 240;
 
 const SYSTEM_LABELS = {
   coc7: '克苏鲁的呼唤 7版',
@@ -21,18 +22,18 @@ const SYSTEM_LABELS = {
 
 // 12 色色相充分拉开的浅/深双模式跑团染色调色盘
 const SPEAKER_PALETTE = [
-  'light-dark(#0f766e, #34d399)', // 碧绿
-  'light-dark(#c2410c, #fb923c)', // 暖橘
-  'light-dark(#1d4ed8, #60a5fa)', // 晴蓝
-  'light-dark(#be185d, #f472b6)', // 樱粉
-  'light-dark(#7c3aed, #c084fc)', // 紫罗兰
-  'light-dark(#a16207, #facc15)', // 琥珀黄
-  'light-dark(#0e7490, #22d3ee)', // 青湖
-  'light-dark(#b91c1c, #f87171)', // 珊瑚红
-  'light-dark(#4d7c0f, #a3e635)', // 苔绿
-  'light-dark(#4338ca, #818cf8)', // 靛青
-  'light-dark(#9d174d, #fb7185)', // 玫瑰
-  'light-dark(#0369a1, #38bdf8)', // 天青
+  'light-dark(#0f766e, #34d399)',
+  'light-dark(#c2410c, #fb923c)',
+  'light-dark(#1d4ed8, #60a5fa)',
+  'light-dark(#be185d, #f472b6)',
+  'light-dark(#7c3aed, #c084fc)',
+  'light-dark(#a16207, #facc15)',
+  'light-dark(#0e7490, #22d3ee)',
+  'light-dark(#b91c1c, #f87171)',
+  'light-dark(#4d7c0f, #a3e635)',
+  'light-dark(#4338ca, #818cf8)',
+  'light-dark(#9d174d, #fb7185)',
+  'light-dark(#0369a1, #38bdf8)',
 ];
 
 const state = {
@@ -52,6 +53,13 @@ const state = {
   lastId: null,
   nextCursorId: null,
   hasOlder: false,
+  hasNewer: false,
+  loadingOlder: false,
+  loadingNewer: false,
+  readAnchor: 'latest', // 'latest' | 'oldest'
+  unreadNewCount: 0,
+  focusedMsgId: null,
+  freshMsgIds: new Set(),
   scannedCount: 0,
   filteredOut: { ooc: 0, ic: 0, dice: 0, speaker: 0, query: 0 },
   msgFilterMode: 'all',
@@ -67,9 +75,11 @@ const state = {
   participantsCache: new Map(),
   speakerColorMap: new Map(),
   mentionNameMap: new Map(),
+  dayBuckets: [], // [{ day, count, el }]
   viewStyle: 'script',
   fontSize: 'md',
   sidebarCollapsed: false,
+  chapterPanelOpen: false,
   links: [],
   editingLinkId: null,
   scopePickerTab: 'groups',
@@ -81,17 +91,56 @@ const state = {
 };
 
 const $ = (id) => document.getElementById(id);
+const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-/* ========= 工具函数 ========= */
+/* ========= 交互特效：Toast / 涟漪 / 滑动亮块 ========= */
 function toast(message, isError = false) {
   const region = $('toast-region');
   const el = document.createElement('div');
   el.className = `toast${isError ? ' is-error' : ''}`;
   el.textContent = message;
   region.appendChild(el);
-  setTimeout(() => el.remove(), 3200);
+  setTimeout(() => {
+    el.classList.add('is-leaving');
+    setTimeout(() => el.remove(), 210);
+  }, 3000);
 }
 
+function attachRippleDelegate() {
+  document.addEventListener('pointerdown', (event) => {
+    if (event.button !== 0 || prefersReducedMotion()) return;
+    const target = event.target.closest('.has-ripple');
+    if (!target || target.disabled) return;
+    const rect = target.getBoundingClientRect();
+    const size = Math.max(rect.width, rect.height) * 0.9;
+    const wave = document.createElement('span');
+    wave.className = 'click-ripple';
+    wave.style.width = `${size}px`;
+    wave.style.height = `${size}px`;
+    wave.style.left = `${event.clientX - rect.left - size / 2}px`;
+    wave.style.top = `${event.clientY - rect.top - size / 2}px`;
+    target.appendChild(wave);
+    setTimeout(() => wave.remove(), 540);
+  });
+}
+
+function syncSlider(container) {
+  if (!container) return;
+  const slider = container.querySelector(':scope > .seg-slider');
+  const active = container.querySelector(':scope > .is-active');
+  if (!slider || !active) return;
+  const width = active.offsetWidth;
+  if (width === 0) return;
+  slider.style.width = `${width}px`;
+  slider.style.transform = `translate3d(${active.offsetLeft}px, 0, 0)`;
+  container.classList.add('is-slider-ready');
+}
+
+function syncAllSliders() {
+  document.querySelectorAll('.has-slider').forEach(syncSlider);
+}
+
+/* ========= 工具函数 ========= */
 async function copyText(text, successMsg = '已复制到剪贴板') {
   try {
     await navigator.clipboard.writeText(text);
@@ -192,7 +241,6 @@ function rebuildSpeakerAndMentionMaps(participants = []) {
     }
   };
 
-  // 按发言频次顺次分配 12 种高辨识度颜色，同桌角色互不撞色
   for (const p of participants) {
     const nick = String(p.nickname || '').trim();
     if (nick && !colorMap.has(nick)) {
@@ -201,7 +249,6 @@ function rebuildSpeakerAndMentionMaps(participants = []) {
     }
     registerUid(p.im_userid, nick);
   }
-  // 顺手补录当前已加载消息里的 im_userid，防止 participants 尚未返回前漏译
   for (const m of state.messages) {
     const nick = String(m.nickname || '').trim();
     if (nick && !colorMap.has(nick)) {
@@ -216,7 +263,7 @@ function rebuildSpeakerAndMentionMaps(participants = []) {
 }
 
 function resolveOpenQqMentionsText(text) {
-  return String(text || '').replace(/<@([0-9A-Za-z_-]{8,64})>/g, (_full, id) => {
+  return String(text || '').replace(/<@([0-9A-Fa-f]{16,64})>/g, (_full, id) => {
     const name = state.mentionNameMap.get(String(id).toUpperCase());
     return name ? `[@${name}]` : '[@成员]';
   });
@@ -244,7 +291,7 @@ async function apiFetch(path, options = {}) {
   return data;
 }
 
-/* ========= 阅读偏好持久化（视图 / 字号 / 侧栏折叠） ========= */
+/* ========= 阅读偏好持久化 ========= */
 function loadReadingPrefs() {
   try {
     const view = localStorage.getItem(VIEW_STYLE_KEY);
@@ -272,6 +319,11 @@ function applyReadingPrefs() {
     btn.classList.toggle('is-active', active);
     btn.setAttribute('aria-pressed', String(active));
   });
+  document.querySelectorAll('[data-read-anchor]').forEach((btn) => {
+    const active = btn.dataset.readAnchor === state.readAnchor;
+    btn.classList.toggle('is-active', active);
+    btn.setAttribute('aria-pressed', String(active));
+  });
   const layout = $('tab-reader');
   const collapseBtn = $('desktop-sidebar-btn');
   if (layout) layout.classList.toggle('is-sidebar-collapsed', state.sidebarCollapsed);
@@ -279,6 +331,7 @@ function applyReadingPrefs() {
     collapseBtn.classList.toggle('is-active', state.sidebarCollapsed);
     collapseBtn.setAttribute('aria-pressed', String(state.sidebarCollapsed));
   }
+  requestAnimationFrame(syncAllSliders);
 }
 
 /* ========= 主题切换（遵循 dark-mode-toggle） ========= */
@@ -388,6 +441,7 @@ async function showApp() {
   state.authenticated = true;
   $('login-view').hidden = true;
   $('app-shell').hidden = false;
+  requestAnimationFrame(syncAllSliders);
   await Promise.all([loadOverview(), loadGroups(), loadLogs(true), loadLinks()]);
 }
 
@@ -398,6 +452,7 @@ function switchTab(tab) {
   });
   $('tab-reader').hidden = tab !== 'reader';
   $('tab-links').hidden = tab !== 'links';
+  requestAnimationFrame(syncAllSliders);
   if (tab === 'links') {
     void loadOverview();
     void loadLinks();
@@ -407,6 +462,165 @@ function switchTab(tab) {
 function setMobileSidebarOpen(open) {
   $('log-sidebar').classList.toggle('is-open', open);
   $('sidebar-backdrop').hidden = !open;
+}
+
+/* ========= 滚动进度、哨兵回退与章节导航 ========= */
+function getScrollMetrics() {
+  const isMobile = window.matchMedia('(max-width: 860px)').matches;
+  const scroller = $('message-scroll');
+  if (isMobile) {
+    const doc = document.documentElement;
+    const top = window.scrollY;
+    const max = Math.max(0, doc.scrollHeight - window.innerHeight);
+    return { isMobile, scroller, top, max, distBottom: Math.max(0, max - top) };
+  }
+  const top = scroller.scrollTop;
+  const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+  return { isMobile, scroller, top, max, distBottom: Math.max(0, max - top) };
+}
+
+function smoothScrollTo(position) {
+  const { isMobile, scroller } = getScrollMetrics();
+  const behavior = prefersReducedMotion() ? 'auto' : 'smooth';
+  if (isMobile) {
+    window.scrollTo({ top: position, behavior });
+  } else {
+    scroller.scrollTo({ top: position, behavior });
+  }
+}
+
+let scrollRaf = 0;
+function scheduleScrollSync() {
+  if (scrollRaf) return;
+  scrollRaf = requestAnimationFrame(() => {
+    scrollRaf = 0;
+    syncScrollProgressAndChapters();
+  });
+}
+
+function syncScrollProgressAndChapters() {
+  if (!state.activeLog || state.activeTab !== 'reader') return;
+  const { scroller, top, max, distBottom } = getScrollMetrics();
+
+  // 1. 顶部 2.5px 阅读进度条
+  const ratio = max > 4 ? Math.min(1, Math.max(0, top / max)) : 1;
+  const bar = $('read-progress-bar');
+  if (bar) bar.style.transform = `scaleX(${ratio.toFixed(4)})`;
+
+  const pctEl = $('dock-percent');
+  if (pctEl) pctEl.textContent = `${Math.round(ratio * 100)}%`;
+
+  // 2. 更新非 scroll-state 浏览器的悬浮回顶/回底可见类
+  scroller.classList.toggle('can-scroll-top', top > 80);
+  scroller.classList.toggle('can-scroll-bottom', distBottom > 90);
+
+  if (distBottom < 90 && state.unreadNewCount > 0) {
+    state.unreadNewCount = 0;
+    updateUnreadDockBadge();
+    $('jump-bottom-btn').hidden = true;
+  }
+
+  // 3. 当前阅读日期定位
+  const scrollerRect = scroller.getBoundingClientRect();
+  const anchorY = window.matchMedia('(max-width: 860px)').matches ? 140 : scrollerRect.top + 80;
+  let currentDay = state.dayBuckets[0]?.day || '';
+  for (const bucket of state.dayBuckets) {
+    if (bucket.el && bucket.el.getBoundingClientRect().top <= anchorY) {
+      currentDay = bucket.day;
+    } else {
+      break;
+    }
+  }
+  if (currentDay) {
+    $('dock-current-day').textContent = currentDay.slice(5); // MM-DD
+    document.querySelectorAll('.chapter-day-btn').forEach((btn) => {
+      btn.classList.toggle('is-current', btn.dataset.day === currentDay);
+    });
+  }
+
+  // 4. 双向无感自动续载（距顶 < 240px 自动补更早，距底 < 240px 且有后续时自动补更新）
+  if (top < AUTO_LOAD_THRESHOLD_PX && state.hasOlder && !state.loadingOlder && state.messages.length > 0) {
+    void loadMessages({ mode: 'older' });
+  }
+  if (distBottom < AUTO_LOAD_THRESHOLD_PX && state.hasNewer && !state.loadingNewer && state.messages.length > 0) {
+    void loadMessages({ mode: 'newer' });
+  }
+}
+
+function setupScrollObservers() {
+  const scroller = $('message-scroll');
+  if (!scroller) return;
+
+  // 遵循 scroll-position-aware-elements：非原生 scroll-state 浏览器使用 IntersectionObserver 回退
+  if (!window.CSS?.supports?.('container-type', 'scroll-state')) {
+    const topSentinel = $('scroll-top-sentinel');
+    const bottomSentinel = $('scroll-bottom-sentinel');
+    const io = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (entry.target === topSentinel) {
+          scroller.classList.toggle('can-scroll-top', !entry.isIntersecting);
+        } else if (entry.target === bottomSentinel) {
+          scroller.classList.toggle('can-scroll-bottom', !entry.isIntersecting);
+        }
+      }
+    }, { root: scroller, threshold: 0 });
+    if (topSentinel) io.observe(topSentinel);
+    if (bottomSentinel) io.observe(bottomSentinel);
+  }
+
+  // 遵循指南：悬浮按钮隐藏导致失焦时把焦点还给滚动区
+  const dock = document.querySelector('.scroll-dock');
+  dock?.addEventListener('focusout', (event) => {
+    if (!event.relatedTarget) scroller.focus({ preventScroll: true });
+  });
+}
+
+function updateUnreadDockBadge() {
+  const badge = $('dock-unread-badge');
+  if (!badge) return;
+  if (state.unreadNewCount > 0) {
+    badge.textContent = state.unreadNewCount > 99 ? '99+' : String(state.unreadNewCount);
+    badge.hidden = false;
+  } else {
+    badge.hidden = true;
+  }
+}
+
+function setChapterPanelOpen(open) {
+  state.chapterPanelOpen = open;
+  $('chapter-panel').hidden = !open;
+  $('chapter-toggle-btn').setAttribute('aria-expanded', String(open));
+  if (open) renderChapterDaysList();
+}
+
+function renderChapterDaysList() {
+  const wrap = $('chapter-days-list');
+  wrap.innerHTML = '';
+  $('chapter-loaded-hint').textContent = `已载 ${formatNumber(state.messages.length)} 条`;
+
+  if (state.dayBuckets.length === 0) {
+    wrap.innerHTML = '<div class="muted-text" style="padding:8px;text-align:center;">暂无日期节点</div>';
+    return;
+  }
+  for (const bucket of state.dayBuckets) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'chapter-day-btn';
+    btn.dataset.day = bucket.day;
+    btn.innerHTML = `<span>${bucket.day}</span><span class="muted-text">${bucket.count} 条</span>`;
+    btn.addEventListener('click', () => {
+      setChapterPanelOpen(false);
+      if (bucket.el) {
+        bucket.el.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' });
+        bucket.el.classList.remove('is-flash');
+        void bucket.el.offsetWidth;
+        bucket.el.classList.add('is-flash');
+        setTimeout(() => bucket.el.classList.remove('is-flash'), 1200);
+      }
+    });
+    wrap.appendChild(btn);
+  }
+  syncScrollProgressAndChapters();
 }
 
 /* ========= 数据加载：总览 / 群 / 日志目录 ========= */
@@ -459,9 +673,7 @@ async function loadGroups() {
 }
 
 async function loadLogs(reset = true) {
-  if (reset) {
-    state.logsOffset = 0;
-  }
+  if (reset) state.logsOffset = 0;
   const params = new URLSearchParams();
   params.set('limit', '40');
   params.set('offset', String(state.logsOffset));
@@ -502,7 +714,7 @@ function renderLogList() {
   for (const log of state.logs) {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = `log-item${state.activeLog?.id === log.id ? ' is-selected' : ''}`;
+    btn.className = `log-item has-ripple${state.activeLog?.id === log.id ? ' is-selected' : ''}`;
     btn.setAttribute('role', 'option');
     btn.setAttribute('aria-selected', String(state.activeLog?.id === log.id));
 
@@ -547,12 +759,12 @@ function renderLogList() {
   $('log-list-footer').hidden = state.logs.length >= state.logsTotal;
 }
 
-/* ========= 单份日志阅览与消息流 ========= */
+/* ========= 单份日志阅览与双向消息流 ========= */
 function buildMessageQueryParams(extra = {}) {
   const params = new URLSearchParams();
   params.set('filter_mode', state.msgFilterMode);
   params.set('include_dice', state.includeDice ? '1' : '0');
-  params.set('limit', String(extra.limit || 100));
+  params.set('limit', String(extra.limit || 120));
 
   if (state.speakerFilter) params.set('speaker', state.speakerFilter);
   if (state.msgQuery.trim()) params.set('q', state.msgQuery.trim());
@@ -568,16 +780,21 @@ function buildMessageQueryParams(extra = {}) {
     if (state.customEnd) params.set('end_time', String(Math.floor(new Date(state.customEnd).getTime() / 1000)));
   }
 
-  if (extra.after_id) params.set('after_id', String(extra.after_id));
-  if (extra.before_id) params.set('before_id', String(extra.before_id));
+  if (extra.after_id !== undefined) params.set('after_id', String(extra.after_id));
+  if (extra.before_id !== undefined) params.set('before_id', String(extra.before_id));
   return params;
 }
 
 async function selectLog(log) {
   state.activeLog = log;
   state.speakerFilter = '';
+  state.focusedMsgId = null;
+  state.unreadNewCount = 0;
+  state.freshMsgIds.clear();
   state.speakerColorMap = new Map();
   state.mentionNameMap = new Map();
+  setChapterPanelOpen(false);
+  updateUnreadDockBadge();
   $('speaker-filter-select').value = '';
   renderLogList();
 
@@ -590,12 +807,30 @@ async function selectLog(log) {
   $('active-log-system').textContent = sysText;
   $('active-log-group').textContent = log.display_group_name;
   $('active-log-stats').textContent = `日志 #${log.id} · 共 ${formatNumber(log.size)} 条 · 更新于 ${formatDateTime(log.updated_at)}`;
+  requestAnimationFrame(syncAllSliders);
 
-  // 先并发拉取参与者映射与消息，完成后统一按完整映射渲染，保证 12 色不撞色且 <@HEX> 即刻译名
-  await Promise.all([loadSpeakerOptions(log.id, false), loadMessages({ mode: 'initial' })]);
+  await Promise.all([loadSpeakerOptions(log.id, false), loadMessages({ mode: 'initial', animate: true })]);
   if (state.activeLog?.id === log.id) {
     rebuildSpeakerAndMentionMaps(state.participantsCache.get(log.id)?.participants || []);
-    renderMessages();
+    renderMessages({ animate: false });
+    if (state.readAnchor === 'oldest') {
+      scrollToEdge('top', true);
+    } else {
+      scrollToEdge('bottom', true);
+    }
+    syncScrollProgressAndChapters();
+  }
+}
+
+function scrollToEdge(edge, instant = false) {
+  const { isMobile, scroller } = getScrollMetrics();
+  const behavior = instant || prefersReducedMotion() ? 'auto' : 'smooth';
+  if (isMobile) {
+    const target = edge === 'top' ? 0 : document.documentElement.scrollHeight;
+    window.scrollTo({ top: target, behavior });
+  } else {
+    const target = edge === 'top' ? 0 : scroller.scrollHeight;
+    scroller.scrollTo({ top: target, behavior });
   }
 }
 
@@ -615,52 +850,86 @@ async function loadSpeakerOptions(logId, rerender = true) {
       select.appendChild(opt);
     }
     select.value = prev;
-    if (rerender && state.messages.length > 0) renderMessages();
-  } catch {
-    // 发言人下拉加载失败不阻断正文阅读
+    if (rerender && state.messages.length > 0) renderMessages({ animate: false });
+  } catch {}
+}
+
+function setEdgeButtonLoading(which, loading) {
+  const btn = $(which === 'older' ? 'load-older-btn' : 'load-newer-btn');
+  const label = $(which === 'older' ? 'load-older-label' : 'load-newer-label');
+  if (!btn || !label) return;
+  btn.disabled = loading;
+  btn.classList.toggle('is-loading', loading);
+  if (which === 'older') {
+    label.textContent = loading ? '正在衔接更早剧情…' : '↑ 加载更早的跑团记录';
+  } else {
+    label.textContent = loading ? '正在衔接后续剧情…' : '↓ 加载后续跑团记录';
   }
 }
 
-async function loadMessages({ mode = 'initial' } = {}) {
+function updateEdgeControls() {
+  const hasMsgs = state.messages.length > 0;
+  $('load-older-btn').hidden = !state.hasOlder;
+  $('top-origin-mark').hidden = !hasMsgs || state.hasOlder;
+  $('load-newer-btn').hidden = !state.hasNewer;
+  $('bottom-end-mark').hidden = !hasMsgs || state.hasNewer;
+}
+
+async function loadMessages({ mode = 'initial', animate = false } = {}) {
   if (!state.activeLog) return;
   const logId = state.activeLog.id;
   const scrollEl = $('message-scroll');
 
   try {
     if (mode === 'older') {
-      if (!state.firstId) return;
-      const prevHeight = scrollEl.scrollHeight;
-      const prevTop = scrollEl.scrollTop;
-      const params = buildMessageQueryParams({ before_id: state.firstId, limit: 100 });
-      const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
-      if (state.activeLog?.id !== logId) return;
-      const incoming = data.items || [];
-      const existingIds = new Set(state.messages.map((m) => m.id));
-      const fresh = incoming.filter((m) => !existingIds.has(m.id));
-      state.messages = [...fresh, ...state.messages];
-      state.firstId = data.first_id ?? state.firstId;
-      state.hasOlder = Boolean(data.has_older);
-      rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
-      renderMessages();
-      scrollEl.scrollTop = prevTop + (scrollEl.scrollHeight - prevHeight);
-      updateStatusbar();
+      if (!state.firstId || state.loadingOlder) return;
+      state.loadingOlder = true;
+      setEdgeButtonLoading('older', true);
+      try {
+        const isMobile = window.matchMedia('(max-width: 860px)').matches;
+        const prevHeight = isMobile ? document.documentElement.scrollHeight : scrollEl.scrollHeight;
+        const prevTop = isMobile ? window.scrollY : scrollEl.scrollTop;
+
+        const params = buildMessageQueryParams({ before_id: state.firstId, limit: 120 });
+        const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
+        if (state.activeLog?.id !== logId) return;
+        const incoming = data.items || [];
+        const existingIds = new Set(state.messages.map((m) => m.id));
+        const fresh = incoming.filter((m) => !existingIds.has(m.id));
+        state.messages = [...fresh, ...state.messages];
+        state.firstId = data.first_id ?? state.firstId;
+        state.hasOlder = Boolean(data.has_older);
+        rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
+        renderMessages({ animate: false });
+
+        // 严格锁死当前阅读视线，零跳屏
+        const nextHeight = isMobile ? document.documentElement.scrollHeight : scrollEl.scrollHeight;
+        const delta = nextHeight - prevHeight;
+        if (isMobile) window.scrollTo({ top: prevTop + delta, behavior: 'auto' });
+        else scrollEl.scrollTop = prevTop + delta;
+
+        updateStatusbar();
+        syncScrollProgressAndChapters();
+      } finally {
+        state.loadingOlder = false;
+        setEdgeButtonLoading('older', false);
+      }
       return;
     }
 
-    if (mode === 'incremental') {
-      if (!state.nextCursorId) {
-        await loadMessages({ mode: 'initial' });
-        return;
-      }
-      const nearBottom = scrollEl.scrollHeight - scrollEl.scrollTop - scrollEl.clientHeight < 120;
-      const params = buildMessageQueryParams({ after_id: state.nextCursorId, limit: 150 });
-      const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
-      if (state.activeLog?.id !== logId) return;
-      const incoming = data.items || [];
-      if (data.next_cursor_id && (!state.nextCursorId || data.next_cursor_id > state.nextCursorId)) {
-        state.nextCursorId = data.next_cursor_id;
-      }
-      if (incoming.length > 0) {
+    if (mode === 'newer') {
+      if (!state.nextCursorId || state.loadingNewer) return;
+      state.loadingNewer = true;
+      setEdgeButtonLoading('newer', true);
+      try {
+        const params = buildMessageQueryParams({ after_id: state.nextCursorId, limit: 120 });
+        const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
+        if (state.activeLog?.id !== logId) return;
+        const incoming = data.items || [];
+        if (data.next_cursor_id && (!state.nextCursorId || data.next_cursor_id > state.nextCursorId)) {
+          state.nextCursorId = data.next_cursor_id;
+        }
+        state.hasNewer = Boolean(data.has_newer);
         const existingIds = new Set(state.messages.map((m) => m.id));
         const fresh = incoming.filter((m) => !existingIds.has(m.id));
         if (fresh.length > 0) {
@@ -668,21 +937,67 @@ async function loadMessages({ mode = 'initial' } = {}) {
           state.lastId = fresh[fresh.length - 1].id;
           if (!state.firstId) state.firstId = fresh[0].id;
           rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
-          renderMessages();
+          renderMessages({ animate: false });
+        } else {
+          updateEdgeControls();
+        }
+        updateStatusbar();
+        syncScrollProgressAndChapters();
+      } finally {
+        state.loadingNewer = false;
+        setEdgeButtonLoading('newer', false);
+      }
+      return;
+    }
+
+    if (mode === 'incremental') {
+      if (!state.nextCursorId || state.hasNewer) {
+        if (state.hasNewer) {
+          await loadMessages({ mode: 'newer' });
+          return;
+        }
+        await loadMessages({ mode: 'initial', animate: false });
+        return;
+      }
+      const { distBottom } = getScrollMetrics();
+      const nearBottom = distBottom < 120;
+      const params = buildMessageQueryParams({ after_id: state.nextCursorId, limit: 150 });
+      const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
+      if (state.activeLog?.id !== logId) return;
+      const incoming = data.items || [];
+      if (data.next_cursor_id && (!state.nextCursorId || data.next_cursor_id > state.nextCursorId)) {
+        state.nextCursorId = data.next_cursor_id;
+      }
+      state.hasNewer = Boolean(data.has_newer);
+      if (incoming.length > 0) {
+        const existingIds = new Set(state.messages.map((m) => m.id));
+        const fresh = incoming.filter((m) => !existingIds.has(m.id));
+        if (fresh.length > 0) {
+          state.messages = [...state.messages, ...fresh];
+          state.lastId = fresh[fresh.length - 1].id;
+          if (!state.firstId) state.firstId = fresh[0].id;
+          state.freshMsgIds = new Set(fresh.map((m) => m.id));
+          setTimeout(() => state.freshMsgIds.clear(), 2200);
+          rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
+          renderMessages({ animate: false });
           if (nearBottom) {
-            scrollEl.scrollTop = scrollEl.scrollHeight;
+            scrollToEdge('bottom', false);
           } else {
+            state.unreadNewCount += fresh.length;
+            updateUnreadDockBadge();
             $('jump-bottom-btn').hidden = false;
             toast(`新增 ${fresh.length} 条跑团消息`);
           }
         }
       }
       updateStatusbar();
+      syncScrollProgressAndChapters();
       return;
     }
 
-    // initial reload
-    const params = buildMessageQueryParams({ limit: 120 });
+    // initial reload（支持最新倒序起点与开篇首句起点）
+    const extra = state.readAnchor === 'oldest' ? { after_id: 0, limit: 120 } : { limit: 120 };
+    const params = buildMessageQueryParams(extra);
     const data = await apiFetch(`/logs/${logId}/messages?${params.toString()}`);
     if (state.activeLog?.id !== logId) return;
     state.messages = data.items || [];
@@ -690,24 +1005,36 @@ async function loadMessages({ mode = 'initial' } = {}) {
     state.lastId = data.last_id;
     state.nextCursorId = data.next_cursor_id;
     state.hasOlder = Boolean(data.has_older);
+    state.hasNewer = Boolean(data.has_newer);
+    state.unreadNewCount = 0;
     state.scannedCount = data.scanned_count || 0;
     state.filteredOut = data.filtered_out || { ooc: 0, ic: 0, dice: 0, speaker: 0, query: 0 };
+    updateUnreadDockBadge();
     rebuildSpeakerAndMentionMaps(state.participantsCache.get(logId)?.participants || []);
-    renderMessages();
+    renderMessages({ animate });
     updateStatusbar();
-    scrollEl.scrollTop = scrollEl.scrollHeight;
+    scrollToEdge(state.readAnchor === 'oldest' ? 'top' : 'bottom', true);
     $('jump-bottom-btn').hidden = true;
+    requestAnimationFrame(syncScrollProgressAndChapters);
   } catch (err) {
     toast(err.message, true);
   }
 }
 
+function detectDiceCritClass(msg) {
+  if (msg.kind !== 'dice_result') return '';
+  const text = String(msg.message || '');
+  if (/大失败/.test(text)) return 'is-crit-fumble';
+  if (/大成功|极难成功/.test(text)) return 'is-crit-success';
+  return '';
+}
+
 function appendInlineChips(parent, text) {
-  const tokenRe = /(\[(?:图片|语音|视频|表情|回复|合并转发|@[^\]]+)\]|<@[0-9A-Za-z_-]{8,64}>)/g;
+  const tokenRe = /(\[(?:图片|语音|视频|表情|回复|合并转发|@[^\]]+)\]|<@[0-9A-Fa-f]{16,64}>)/g;
   const parts = String(text || '').split(tokenRe);
   for (const part of parts) {
     if (!part) continue;
-    const openQqMatch = /^<@([0-9A-Za-z_-]{8,64})>$/.exec(part);
+    const openQqMatch = /^<@([0-9A-Fa-f]{16,64})>$/.exec(part);
     if (openQqMatch) {
       const rawId = openQqMatch[1];
       const resolved = state.mentionNameMap.get(rawId.toUpperCase());
@@ -762,25 +1089,25 @@ function shouldGroupWithPrevious(prev, curr, prevDay, currDay) {
   if (!prev) return false;
   if (prevDay !== currDay) return false;
   if (prev.channel !== curr.channel) return false;
-  // 掷骰指令/检定单独保持清晰视觉锚点，不与普通台词合并
   if (prev.kind === 'dice_result' || prev.kind === 'dice_command') return false;
   if (curr.kind === 'dice_result' || curr.kind === 'dice_command') return false;
   if ((prev.nickname || '') !== (curr.nickname || '')) return false;
-  const gap = Math.abs((curr.time || 0) - (prev.time || 0));
-  return gap <= GROUP_WINDOW_SEC;
+  return Math.abs((curr.time || 0) - (prev.time || 0)) <= GROUP_WINDOW_SEC;
 }
 
-function renderMessages() {
+function renderMessages({ animate = false } = {}) {
   const list = $('message-list');
   list.innerHTML = '';
-  $('load-older-wrap').hidden = !state.hasOlder;
   $('message-empty').hidden = state.messages.length > 0;
+  updateEdgeControls();
 
+  const dayBuckets = [];
+  let currentBucket = null;
   let prevDay = '';
   let prevMsg = null;
   const total = state.messages.length;
-  // 首屏底部约 15 条不施加 content-visibility: auto，避免影响首屏滚动落点
-  const deferBeforeIndex = Math.max(0, total - 15);
+  // 按阅读起点避开首屏可见约 16 条的 content-visibility: auto
+  const isFromTop = state.readAnchor === 'oldest';
 
   const frag = document.createDocumentFragment();
   state.messages.forEach((msg, index) => {
@@ -790,24 +1117,48 @@ function renderMessages() {
       div.className = 'day-divider';
       div.textContent = day;
       frag.appendChild(div);
+      currentBucket = { day, count: 0, el: div };
+      dayBuckets.push(currentBucket);
     }
+    if (currentBucket) currentBucket.count += 1;
 
     const grouped = shouldGroupWithPrevious(prevMsg, msg, prevDay, day);
     prevDay = day;
     prevMsg = msg;
 
+    const isOffscreen = isFromTop ? index >= 16 : index < Math.max(0, total - 16);
+    const animRank = isFromTop ? index : total - 1 - index;
+    const shouldEnter = animate && animRank >= 0 && animRank < 14;
+
     const row = document.createElement('article');
     const isOoc = msg.channel === 'ooc';
     const isDice = msg.kind === 'dice_result' || msg.kind === 'dice_command';
+    const critClass = detectDiceCritClass(msg);
+
     row.className = [
       'msg-row',
       isOoc ? 'is-ooc' : '',
       isDice ? 'is-dice' : '',
       msg.kind === 'dice_command' ? 'is-dice-cmd' : '',
+      critClass,
       grouped ? 'is-grouped' : '',
-      index < deferBeforeIndex ? 'is-deferred' : '',
+      isOffscreen ? 'is-deferred' : '',
+      shouldEnter ? 'is-enter' : '',
+      state.freshMsgIds.has(msg.id) ? 'is-fresh' : '',
+      state.focusedMsgId === msg.id ? 'is-focused' : '',
     ].filter(Boolean).join(' ');
     row.style.setProperty('--speaker-color', speakerColor(msg.nickname));
+    if (shouldEnter) {
+      row.style.setProperty('--enter-delay', `${animRank * 16}ms`);
+    }
+
+    row.addEventListener('click', (event) => {
+      if (event.target.closest('button') || window.getSelection()?.toString()) return;
+      const next = state.focusedMsgId === msg.id ? null : msg.id;
+      document.querySelectorAll('.msg-row.is-focused').forEach((el) => el.classList.remove('is-focused'));
+      state.focusedMsgId = next;
+      if (next === msg.id) row.classList.add('is-focused');
+    });
 
     const head = document.createElement('div');
     head.className = 'msg-head';
@@ -825,7 +1176,7 @@ function renderMessages() {
     speakerBtn.addEventListener('click', () => {
       state.speakerFilter = state.speakerFilter === msg.nickname ? '' : msg.nickname;
       $('speaker-filter-select').value = state.speakerFilter;
-      void loadMessages({ mode: 'initial' });
+      void loadMessages({ mode: 'initial', animate: true });
     });
     head.appendChild(speakerBtn);
 
@@ -837,7 +1188,7 @@ function renderMessages() {
     } else if (msg.kind === 'dice_result') {
       const tag = document.createElement('span');
       tag.className = 'msg-kind-tag tag-dice';
-      tag.textContent = '检定';
+      tag.textContent = critClass === 'is-crit-success' ? '大捷' : (critClass === 'is-crit-fumble' ? '大失败' : '检定');
       head.appendChild(tag);
     } else if (msg.kind === 'dice_command') {
       const tag = document.createElement('span');
@@ -852,25 +1203,39 @@ function renderMessages() {
     timeEl.title = formatDateTime(msg.time);
     head.appendChild(timeEl);
 
-    const makeIdBtn = () => {
+    const makeTools = () => {
+      const copyLineBtn = document.createElement('button');
+      copyLineBtn.type = 'button';
+      copyLineBtn.className = 'msg-tool-btn msg-copy-btn';
+      copyLineBtn.textContent = '复制';
+      copyLineBtn.title = '复制该条发言';
+      copyLineBtn.addEventListener('click', () => {
+        const cleanText = resolveOpenQqMentionsText(msg.message);
+        void copyText(`${msg.nickname}: ${cleanText}`, '已复制本条发言');
+      });
+
       const idBtn = document.createElement('button');
       idBtn.type = 'button';
-      idBtn.className = 'msg-id-btn';
+      idBtn.className = 'msg-tool-btn';
       idBtn.textContent = `#${msg.id}`;
       idBtn.title = '点击复制消息游标 ID';
       idBtn.addEventListener('click', () => {
         void copyText(String(msg.id), `已复制消息游标 #${msg.id}`);
       });
-      return idBtn;
+      return [copyLineBtn, idBtn];
     };
-    head.appendChild(makeIdBtn());
+
+    const toolsWrap = document.createElement('div');
+    toolsWrap.className = 'msg-tools';
+    toolsWrap.append(...makeTools());
+    head.appendChild(toolsWrap);
 
     const inlineMeta = document.createElement('div');
     inlineMeta.className = 'msg-inline-meta';
     const miniTime = document.createElement('span');
     miniTime.className = 'msg-time';
     miniTime.textContent = formatTimeHms(msg.time);
-    inlineMeta.append(miniTime, makeIdBtn());
+    inlineMeta.append(miniTime, ...makeTools());
 
     const body = document.createElement('div');
     body.className = 'msg-body';
@@ -881,10 +1246,12 @@ function renderMessages() {
   });
 
   list.appendChild(frag);
+  state.dayBuckets = dayBuckets;
+  if (state.chapterPanelOpen) renderChapterDaysList();
 }
 
 function updateStatusbar() {
-  $('statusbar-summary').textContent = `当前展示 ${formatNumber(state.messages.length)} 条`;
+  $('statusbar-summary').textContent = `当前已载 ${formatNumber(state.messages.length)} 条`;
   const f = state.filteredOut || {};
   const skips = [];
   if (f.ooc > 0) skips.push(`已隐藏 ${f.ooc} 条场外`);
@@ -989,7 +1356,7 @@ async function openParticipantsDialog() {
     for (const p of data.participants || []) {
       const btn = document.createElement('button');
       btn.type = 'button';
-      btn.className = 'participant-row';
+      btn.className = 'participant-row has-ripple';
       const name = document.createElement('span');
       name.className = 'participant-name';
       name.textContent = p.nickname || '未命名角色';
@@ -1002,7 +1369,7 @@ async function openParticipantsDialog() {
         state.speakerFilter = p.nickname;
         $('speaker-filter-select').value = p.nickname;
         void closeDialog(dialog);
-        void loadMessages({ mode: 'initial' });
+        void loadMessages({ mode: 'initial', animate: true });
       });
       listEl.appendChild(btn);
     }
@@ -1081,31 +1448,31 @@ function renderLinks() {
 
     const guideBtn = document.createElement('button');
     guideBtn.type = 'button';
-    guideBtn.className = 'btn btn-secondary btn-sm';
+    guideBtn.className = 'btn btn-secondary btn-sm has-ripple';
     guideBtn.textContent = '接入指引';
     guideBtn.addEventListener('click', () => openGuideDialog(link));
 
     const editBtn = document.createElement('button');
     editBtn.type = 'button';
-    editBtn.className = 'btn btn-secondary btn-sm';
+    editBtn.className = 'btn btn-secondary btn-sm has-ripple';
     editBtn.textContent = '编辑范围';
     editBtn.addEventListener('click', () => void openLinkDialog(link));
 
     const toggleBtn = document.createElement('button');
     toggleBtn.type = 'button';
-    toggleBtn.className = 'btn btn-secondary btn-sm';
+    toggleBtn.className = 'btn btn-secondary btn-sm has-ripple';
     toggleBtn.textContent = link.enabled ? '停用' : '启用';
     toggleBtn.addEventListener('click', () => void toggleLinkEnabled(link));
 
     const rotateBtn = document.createElement('button');
     rotateBtn.type = 'button';
-    rotateBtn.className = 'btn btn-secondary btn-sm';
+    rotateBtn.className = 'btn btn-secondary btn-sm has-ripple';
     rotateBtn.textContent = '轮换令牌';
     rotateBtn.addEventListener('click', () => void rotateLink(link));
 
     const delBtn = document.createElement('button');
     delBtn.type = 'button';
-    delBtn.className = 'btn btn-danger btn-sm';
+    delBtn.className = 'btn btn-danger btn-sm has-ripple';
     delBtn.textContent = '删除';
     delBtn.addEventListener('click', () => void deleteLink(link));
 
@@ -1119,7 +1486,7 @@ function renderLinks() {
     urlText.textContent = link.url;
     const copyBtn = document.createElement('button');
     copyBtn.type = 'button';
-    copyBtn.className = 'btn btn-primary btn-sm';
+    copyBtn.className = 'btn btn-primary btn-sm has-ripple';
     copyBtn.textContent = '复制链接';
     copyBtn.addEventListener('click', () => void copyText(link.url, '已复制 MCP 接入链接'));
     urlBox.append(urlText, copyBtn);
@@ -1401,12 +1768,23 @@ function openGuideDialog(link) {
 
 /* ========= 事件绑定与启动 ========= */
 function bindEvents() {
+  attachRippleDelegate();
   $('theme-toggle').addEventListener('click', toggleTheme);
 
   $('desktop-sidebar-btn').addEventListener('click', () => {
     state.sidebarCollapsed = !state.sidebarCollapsed;
     try { localStorage.setItem(SIDEBAR_KEY, state.sidebarCollapsed ? '1' : '0'); } catch {}
     applyReadingPrefs();
+  });
+
+  document.querySelectorAll('[data-read-anchor]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const next = btn.dataset.readAnchor;
+      if (next === state.readAnchor) return;
+      state.readAnchor = next;
+      applyReadingPrefs();
+      void loadMessages({ mode: 'initial', animate: true });
+    });
   });
 
   document.querySelectorAll('[data-view-style]').forEach((btn) => {
@@ -1492,7 +1870,8 @@ function bindEvents() {
         b.classList.toggle('is-active', active);
         b.setAttribute('aria-pressed', String(active));
       });
-      void loadMessages({ mode: 'initial' });
+      requestAnimationFrame(syncAllSliders);
+      void loadMessages({ mode: 'initial', animate: true });
     });
   });
 
@@ -1501,25 +1880,25 @@ function bindEvents() {
     const btn = $('include-dice-btn');
     btn.classList.toggle('is-active', state.includeDice);
     btn.setAttribute('aria-pressed', String(state.includeDice));
-    void loadMessages({ mode: 'initial' });
+    void loadMessages({ mode: 'initial', animate: true });
   });
 
   $('speaker-filter-select').addEventListener('change', (e) => {
     state.speakerFilter = e.target.value;
-    void loadMessages({ mode: 'initial' });
+    void loadMessages({ mode: 'initial', animate: true });
   });
 
   $('time-preset-select').addEventListener('change', (e) => {
     state.timePreset = e.target.value;
     $('custom-time-row').hidden = state.timePreset !== 'custom';
     if (state.timePreset !== 'custom') {
-      void loadMessages({ mode: 'initial' });
+      void loadMessages({ mode: 'initial', animate: true });
     }
   });
   $('apply-custom-time-btn').addEventListener('click', () => {
     state.customStart = $('custom-start-input').value;
     state.customEnd = $('custom-end-input').value;
-    void loadMessages({ mode: 'initial' });
+    void loadMessages({ mode: 'initial', animate: true });
   });
   $('clear-custom-time-btn').addEventListener('click', () => {
     state.customStart = '';
@@ -1529,14 +1908,14 @@ function bindEvents() {
     state.timePreset = 'all';
     $('time-preset-select').value = 'all';
     $('custom-time-row').hidden = true;
-    void loadMessages({ mode: 'initial' });
+    void loadMessages({ mode: 'initial', animate: true });
   });
 
   let msgSearchTimer;
   $('msg-search-input').addEventListener('input', (e) => {
     state.msgQuery = e.target.value;
     clearTimeout(msgSearchTimer);
-    msgSearchTimer = setTimeout(() => void loadMessages({ mode: 'initial' }), 280);
+    msgSearchTimer = setTimeout(() => void loadMessages({ mode: 'initial', animate: true }), 280);
   });
 
   $('reset-msg-filters-btn').addEventListener('click', () => {
@@ -1558,25 +1937,71 @@ function bindEvents() {
     $('time-preset-select').value = 'all';
     $('custom-time-row').hidden = true;
     $('msg-search-input').value = '';
-    void loadMessages({ mode: 'initial' });
+    requestAnimationFrame(syncAllSliders);
+    void loadMessages({ mode: 'initial', animate: true });
   });
 
   $('auto-poll-btn').addEventListener('click', toggleAutoPoll);
-  $('refresh-messages-btn').addEventListener('click', () => void loadMessages({ mode: 'incremental' }));
+  $('refresh-messages-btn').addEventListener('click', () => {
+    const btn = $('refresh-messages-btn');
+    btn.classList.remove('is-spinning');
+    void btn.offsetWidth;
+    btn.classList.add('is-spinning');
+    setTimeout(() => btn.classList.remove('is-spinning'), 600);
+    void loadMessages({ mode: 'incremental' });
+  });
   $('participants-btn').addEventListener('click', () => void openParticipantsDialog());
   $('copy-filtered-btn').addEventListener('click', () => void copyFilteredTranscript());
   $('export-txt-btn').addEventListener('click', exportFilteredTxt);
   $('load-older-btn').addEventListener('click', () => void loadMessages({ mode: 'older' }));
+  $('load-newer-btn').addEventListener('click', () => void loadMessages({ mode: 'newer' }));
 
-  $('jump-bottom-btn').addEventListener('click', () => {
-    const scrollEl = $('message-scroll');
-    scrollEl.scrollTop = scrollEl.scrollHeight;
-    $('jump-bottom-btn').hidden = true;
+  // 滚动进度、悬浮控制舱与章节面板
+  $('message-scroll').addEventListener('scroll', scheduleScrollSync, { passive: true });
+  window.addEventListener('scroll', scheduleScrollSync, { passive: true });
+  window.addEventListener('resize', () => {
+    syncAllSliders();
+    scheduleScrollSync();
+  }, { passive: true });
+
+  $('chapter-toggle-btn').addEventListener('click', (e) => {
+    e.stopPropagation();
+    setChapterPanelOpen(!state.chapterPanelOpen);
   });
-  $('message-scroll').addEventListener('scroll', (e) => {
-    const el = e.target;
-    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-    if (nearBottom) $('jump-bottom-btn').hidden = true;
+  document.addEventListener('click', (e) => {
+    if (state.chapterPanelOpen && !e.target.closest('.scroll-dock-anchor')) {
+      setChapterPanelOpen(false);
+    }
+  });
+  $('jump-story-start-btn').addEventListener('click', () => {
+    setChapterPanelOpen(false);
+    state.readAnchor = 'oldest';
+    applyReadingPrefs();
+    void loadMessages({ mode: 'initial', animate: true });
+  });
+  $('jump-story-latest-btn').addEventListener('click', () => {
+    setChapterPanelOpen(false);
+    state.readAnchor = 'latest';
+    applyReadingPrefs();
+    void loadMessages({ mode: 'initial', animate: true });
+  });
+  $('dock-top-btn').addEventListener('click', () => smoothScrollTo(0));
+  $('dock-bottom-btn').addEventListener('click', () => {
+    if (state.hasNewer) {
+      state.readAnchor = 'latest';
+      applyReadingPrefs();
+      void loadMessages({ mode: 'initial', animate: true });
+    } else {
+      scrollToEdge('bottom', false);
+      state.unreadNewCount = 0;
+      updateUnreadDockBadge();
+    }
+  });
+  $('jump-bottom-btn').addEventListener('click', () => {
+    scrollToEdge('bottom', false);
+    $('jump-bottom-btn').hidden = true;
+    state.unreadNewCount = 0;
+    updateUnreadDockBadge();
   });
 
   // MCP 链接与弹窗
@@ -1622,6 +2047,8 @@ function bindEvents() {
   ['link-dialog', 'guide-dialog', 'participants-dialog'].forEach((id) => {
     setupModalDialog($(id));
   });
+
+  setupScrollObservers();
 }
 
 async function bootstrap() {

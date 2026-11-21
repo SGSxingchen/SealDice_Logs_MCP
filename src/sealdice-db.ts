@@ -2,10 +2,12 @@ import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
 import { setImmediate } from 'node:timers/promises';
 import { HttpError, LOG_UNAVAILABLE } from './errors.js';
 import { isLogAllowedByScope, type LinkScope } from './link-store.js';
-import { classifyLogItem, cleanCqMessage, filterReason, type FilterMode, type MessageKind } from './message-classifier.js';
+import { classifyLogItem, cleanCqMessage, filterReason, resolveMentions, type FilterMode, type MessageKind } from './message-classifier.js';
 
 const BATCH_SIZE = 400;
 const GROUP_CACHE_MS = 15_000;
+const MENTION_CACHE_MS = 30_000;
+const MAX_MENTION_CACHE_LOGS = 64;
 const OVERVIEW_CACHE_MS = 60_000;
 const MAX_MULTI_LOG_SEARCH_SCAN = 120_000;
 const MAX_SINGLE_LOG_SEARCH_SCAN = 250_000;
@@ -239,7 +241,9 @@ function itemFilters(options: MessageFilters): ItemFilters {
   };
 }
 
-function readMessage(row: ItemRow, filters: ItemFilters): LogMessage | keyof FilterCounts {
+function readMessage(
+  row: ItemRow, filters: ItemFilters, getMentions?: () => Map<string, string>,
+): LogMessage | keyof FilterCounts {
   const classification = classifyLogItem(row, filters.extraOocPrefixes);
   const excluded = filterReason(classification, filters.mode, filters.includeDice);
   if (excluded) return excluded;
@@ -248,7 +252,10 @@ function readMessage(row: ItemRow, filters: ItemFilters): LogMessage | keyof Fil
     return 'speaker';
   }
   const raw = row.message ?? '';
-  const message = cleanCqMessage(raw);
+  let message = cleanCqMessage(raw);
+  if (message.includes('<@') || message.includes('[@')) {
+    message = resolveMentions(message, getMentions?.());
+  }
   if (filters.query && !message.toLowerCase().includes(filters.query)) return 'query';
   return {
     id: row.id, time: row.time, time_iso: isoTime(row.time), nickname, im_userid: row.im_userid,
@@ -273,6 +280,7 @@ export class SealDiceDb {
   private closed = false;
   private groupCache?: { expires: number; items: Map<string, GroupInfo> };
   private overviewCache?: { expires: number; maxId: number; totalMessages: number };
+  private readonly mentionCache = new Map<number, { expires: number; names: Map<string, string> }>();
 
   constructor(logsPath: string, private readonly dataPath?: string) {
     this.logs = openReadOnly(logsPath);
@@ -378,13 +386,14 @@ export class SealDiceDb {
     for (const row of this.logRows(scope, options, true)) {
       foundLog = true;
       const log = this.describeLog(row, groups.get(row.group_id));
+      const getMentions = () => this.mentionNames(log.id);
       const newer: LogMessage[] = [];
       const pending: SearchMatch[] = [];
       const firstMatch = matches.length;
       for await (const batch of this.itemBatches(log.id, range)) {
         for (const row of batch) {
           scanned += 1;
-          const item = readMessage(row, filters);
+          const item = readMessage(row, filters, getMentions);
           if (typeof item === 'string') {
             if (scanned >= scanBudget && pending.length === 0) {
               truncated = true;
@@ -513,12 +522,13 @@ export class SealDiceDb {
     let firstScanned: number | undefined;
     let lastScanned: number | undefined;
     if (latest) {
+      const getMentions = () => this.mentionNames(log.id);
       for await (const batch of this.itemBatches(log.id, range, forward, after, before, latest.id)) {
         for (const row of batch) {
           firstScanned ??= row.id;
           lastScanned = row.id;
           scanned_count += 1;
-          const item = readMessage(row, filters);
+          const item = readMessage(row, filters, getMentions);
           if (typeof item === 'string') filtered_out[item] += 1;
           else items.push(item);
           if (items.length === limit) break;
@@ -672,5 +682,42 @@ export class SealDiceDb {
     }
     this.groupCache = { expires: now + GROUP_CACHE_MS, items };
     return items;
+  }
+
+  private mentionNames(logId: number): Map<string, string> {
+    const now = Date.now();
+    const cached = this.mentionCache.get(logId);
+    if (cached && now < cached.expires) return cached.names;
+    const names = new Map<string, string>();
+    const register = (key: string, nick: string) => {
+      const upper = key.trim().toUpperCase();
+      if (upper && !names.has(upper)) names.set(upper, nick);
+    };
+    const rows = this.logs.prepare(`
+      SELECT im_userid, nickname FROM ${LOG_ITEMS}
+      WHERE log_id = ? AND ${VISIBLE} AND im_userid IS NOT NULL AND nickname IS NOT NULL
+      ORDER BY id DESC
+    `).iterate(logId) as Iterable<{ im_userid: string; nickname: string }>;
+    for (const { im_userid, nickname } of rows) {
+      const nick = nickname.trim();
+      const uid = im_userid.trim();
+      if (!nick || !uid) continue;
+      register(uid, nick);
+      const dashIdx = uid.lastIndexOf('-');
+      if (dashIdx !== -1 && dashIdx < uid.length - 1) register(uid.slice(dashIdx + 1), nick);
+      const colonIdx = uid.lastIndexOf(':');
+      if (colonIdx !== -1 && colonIdx < uid.length - 1) {
+        const tail = uid.slice(colonIdx + 1);
+        register(tail, nick);
+        const subDash = tail.lastIndexOf('-');
+        if (subDash !== -1 && subDash < tail.length - 1) register(tail.slice(subDash + 1), nick);
+      }
+    }
+    if (this.mentionCache.size >= MAX_MENTION_CACHE_LOGS) {
+      const oldest = this.mentionCache.keys().next().value;
+      if (oldest !== undefined) this.mentionCache.delete(oldest);
+    }
+    this.mentionCache.set(logId, { expires: now + MENTION_CACHE_MS, names });
+    return names;
   }
 }
