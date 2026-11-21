@@ -8,9 +8,9 @@ import express, { type ErrorRequestHandler, type Request, type RequestHandler } 
 import { AdminAuth } from './admin-auth.js';
 import { mountAdminRoutes, requestOrigin } from './admin-routes.js';
 import { HttpError, LOG_UNAVAILABLE } from './errors.js';
-import { ALL_SCOPE, LinkStore, type McpLinkRecord } from './link-store.js';
-import { createMcpServer, MCP_INFO, MCP_TOOL_COUNT } from './mcp-tools.js';
-import { allowedOriginsFrom, httpOrigin, publicOriginFrom, readRuntimeConfig, registerShutdown } from './runtime.js';
+import { ALL_SCOPE, LinkStore, type DisclosureMode, type McpLinkRecord } from './link-store.js';
+import { createMcpServer, MCP_INFO, MCP_TOOL_COUNT, PROGRESSIVE_TOOL_COUNT } from './mcp-tools.js';
+import { allowedOriginsFrom, httpOrigin, publicOriginFrom, readDisclosureMode, readRuntimeConfig, registerShutdown } from './runtime.js';
 import { SealDiceDb } from './sealdice-db.js';
 
 const MCP_METHODS = ['POST', 'GET', 'DELETE'];
@@ -27,12 +27,14 @@ export interface StreamableHttpAppOptions {
   publicOrigin?: string;
   allowedOrigins?: string | readonly string[];
   enableUnauthLocalMcp?: boolean;
+  defaultDisclosureMode?: DisclosureMode;
 }
 
 interface Session {
   id: string;
   linkId?: string;
   token?: string;
+  disclosureMode: DisclosureMode;
   transport: StreamableHTTPServerTransport;
   activeRequests: number;
   expiryTimer?: NodeJS.Timeout;
@@ -63,6 +65,7 @@ const sendError: ErrorRequestHandler = (error, _req, res, next) => {
 
 export async function createStreamableHttpApp(options: StreamableHttpAppOptions) {
   const { db } = options;
+  const defaultDisclosureMode = options.defaultDisclosureMode ?? readDisclosureMode();
   const publicOrigin = publicOriginFrom(options.publicOrigin);
   const allowed = allowedOriginsFrom(options.allowedOrigins);
   const [auth, linkStore] = await Promise.all([
@@ -168,10 +171,12 @@ export async function createStreamableHttpApp(options: StreamableHttpAppOptions)
       async (req, res) => {
         if (closing) throw new HttpError(503, 'MCP 服务正在停止');
         const link = findLink(req);
+        const disclosureMode = link?.disclosure_mode ?? defaultDisclosureMode;
         const id = req.get('mcp-session-id');
         if (id !== undefined) {
           const session = sessions.get(id);
-          if (!session || session.linkId !== link?.id || session.token !== link?.token) throw unavailableSession();
+          if (!session || session.linkId !== link?.id || session.token !== link?.token
+            || session.disclosureMode !== disclosureMode) throw unavailableSession();
           await serveSession(session, req, res);
           return;
         }
@@ -186,14 +191,18 @@ export async function createStreamableHttpApp(options: StreamableHttpAppOptions)
 
         const sessionId = randomUUID();
         const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: () => sessionId });
-        const session: Session = { id: sessionId, linkId: link?.id, token: link?.token, transport, activeRequests: 0, lastActivity: Date.now() };
+        const session: Session = {
+          id: sessionId, linkId: link?.id, token: link?.token, transport, disclosureMode, activeRequests: 0, lastActivity: Date.now(),
+        };
         const server = createMcpServer(db, () => {
           if (!sessions.has(sessionId)) throw new HttpError(404, LOG_UNAVAILABLE);
           if (!link) return ALL_SCOPE;
           const current = linkStore.findActiveByToken(link.token);
-          if (!current || current.id !== session.linkId) throw new HttpError(404, LOG_UNAVAILABLE);
+          if (!current || current.id !== session.linkId || (current.disclosure_mode ?? defaultDisclosureMode) !== disclosureMode) {
+            throw new HttpError(404, LOG_UNAVAILABLE);
+          }
           return current.scope;
-        }, link && (() => linkStore.recordUsage(link.id)));
+        }, link && (() => linkStore.recordUsage(link.id)), disclosureMode);
 
         transport.onclose = () => forget(session);
         sessions.set(sessionId, session);
@@ -214,6 +223,7 @@ export async function createStreamableHttpApp(options: StreamableHttpAppOptions)
     const dbReady = db.isReady();
     res.status(dbReady ? 200 : 503).json({
       status: dbReady ? 'ok' : 'unavailable', service: MCP_INFO.name, version: MCP_INFO.version, tools: MCP_TOOL_COUNT, dbReady,
+      disclosureMode: defaultDisclosureMode, progressiveTools: PROGRESSIVE_TOOL_COUNT, totalActions: MCP_TOOL_COUNT,
     });
   });
   app.all('/sealdice-logs-mcp/:token/mcp', ...mcpHandlers(true));

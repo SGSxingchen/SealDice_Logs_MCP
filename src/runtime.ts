@@ -1,4 +1,5 @@
 import { resolve } from 'node:path';
+import { DEFAULT_DISCLOSURE_MODE, type DisclosureMode } from './link-store.js';
 
 export function httpOrigin(value: string | undefined): string | undefined {
   if (!value || !/^https?:\/\//i.test(value)) return undefined;
@@ -36,6 +37,13 @@ export function readDatabasePaths(env = process.env) {
   };
 }
 
+export function readDisclosureMode(env = process.env): DisclosureMode {
+  const mode = env.SEALDICE_LOGS_MCP_DISCLOSURE_MODE?.trim();
+  if (!mode) return DEFAULT_DISCLOSURE_MODE;
+  if (mode === 'progressive' || mode === 'legacy') return mode;
+  throw new Error('SEALDICE_LOGS_MCP_DISCLOSURE_MODE 必须是 progressive 或 legacy');
+}
+
 export function readRuntimeConfig(env = process.env) {
   const port = Number(env.PORT?.trim() || '3004');
   if (!Number.isInteger(port) || port < 0 || port > 65535) throw new Error('PORT 必须是 0 至 65535 的整数');
@@ -54,6 +62,7 @@ export function readRuntimeConfig(env = process.env) {
     adminPassword: env.MCP_ADMIN_PASSWORD,
     bootstrapLinks: env.MCP_BOOTSTRAP_LINKS,
     enableUnauthLocalMcp: localMcp === 'true' || localMcp === '1',
+    defaultDisclosureMode: readDisclosureMode(env),
   };
 }
 

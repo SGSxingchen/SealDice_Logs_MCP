@@ -1,13 +1,22 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { Agent, createServer, request } from 'node:http';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable, duplexPair } from 'node:stream';
 import { test } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
+import { writeAdminFile } from '../dist/admin-files.js';
 import { createStreamableHttpApp } from '../dist/http-app.js';
+import { ALL_SCOPE, LinkStore } from '../dist/link-store.js';
+import { createMcpServer, getDisclosureMetrics } from '../dist/mcp-tools.js';
+import { readRuntimeConfig } from '../dist/runtime.js';
 import { SealDiceDb } from '../dist/sealdice-db.js';
 import { createFixture, GROUP_A, GROUP_B, LOG_A, LOG_A_HISTORY, LOG_B, LOG_B_EMPTY } from './fixtures.mjs';
 
@@ -17,6 +26,10 @@ const PUBLIC_ORIGIN = 'https://logs.example.test';
 const DENIED = '找不到该日志或当前链接无权访问';
 const REQUEST_TIMEOUT = 5000;
 const TEST_TIMEOUT = 20000;
+const ACTIONS = ['list_logs', 'get_log_messages', 'get_recent_updates', 'search_log_messages', 'get_log_participants'];
+const META_TOOLS = ['sealdice_discover', 'sealdice_describe', 'sealdice_execute'];
+const listTools = (client) => client.listTools(undefined, { timeout: REQUEST_TIMEOUT });
+const callTool = (client, name, args = {}) => client.callTool({ name, arguments: args }, undefined, { timeout: REQUEST_TIMEOUT });
 
 // 受限环境无法绑定端口时，仍由 Node 解析真实 HTTP 字节并交给 Express。
 function inMemoryHttp(server) {
@@ -75,7 +88,7 @@ async function start(t, options = {}) {
   db = new SealDiceDb(fixture.logsPath, fixture.dataPath);
   service = await createStreamableHttpApp({
     db, stateDir: join(fixture.dir, '.admin'), adminPassword: PASSWORD, publicOrigin: PUBLIC_ORIGIN,
-    enableUnauthLocalMcp: false, ...options,
+    defaultDisclosureMode: readRuntimeConfig({}).defaultDisclosureMode, enableUnauthLocalMcp: false, ...options,
   });
   server = createServer(service.app);
   let base;
@@ -183,6 +196,7 @@ test('管理台静态文件、登录会话及日志查询和导出符合前端�
   await css.body?.cancel();
   assert.deepEqual(await json(await fetch('/health')), {
     status: 'ok', service: 'sealdice-logs-mcp', version: '1.0.0', tools: 5, dbReady: true,
+    disclosureMode: 'progressive', progressiveTools: 3, totalActions: 5,
   });
 
   const status = (cookie) => api('/auth/status', { cookie }).then(json);
@@ -297,7 +311,7 @@ test('管理台拒绝连续错误密码，伪造转发地址无法绕开限流',
   await json(await login(), 429);
 });
 
-test('MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤销会话', { timeout: TEST_TIMEOUT }, async (t) => {
+test('legacy MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤销会话', { timeout: TEST_TIMEOUT }, async (t) => {
   const { fetch, api, login, connect, insertMessage } = await start(t);
   const auth = await login();
   await json(auth);
@@ -312,9 +326,11 @@ test('MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤�
   await mutate('POST', '/links', { label: '无效范围', scope: { type: 'restricted', group_ids: [], log_ids: [] } }, 400);
   await mutate('POST', '/links', { label: '无效类型', scope: { type: 'restricted', group_ids: [], log_ids: ['1'] } }, 400);
   const { item: groupLink } = await mutate('POST', '/links', {
-    label: '仅甲群', expires_in_hours: 24, scope: { type: 'restricted', group_ids: [GROUP_A, GROUP_A], log_ids: [] },
+    label: '仅甲群', disclosure_mode: 'legacy', expires_in_hours: 24,
+    scope: { type: 'restricted', group_ids: [GROUP_A, GROUP_A], log_ids: [] },
   }, 201);
   assert.match(groupLink.id, /^lnk_[a-f0-9]{12}$/);
+  assert.equal(groupLink.disclosure_mode, 'legacy');
   assert.equal(new URL(groupLink.url).origin, PUBLIC_ORIGIN);
   assert.match(new URL(groupLink.url).pathname, /^\/sealdice-logs-mcp\/[A-Za-z0-9_-]{43}\/mcp$/);
   assert.equal(groupLink.expired, false);
@@ -322,7 +338,8 @@ test('MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤�
   assert.deepEqual(groupLink.scope, { type: 'restricted', group_ids: [GROUP_A], log_ids: [] });
   assert.deepEqual(groupLink.scope_labels, { groups: [{ group_id: GROUP_A, display_name: '月港调查组' }], logs: [] });
   const { item: logLink } = await mutate('POST', '/links', {
-    label: '仅乙群一份日志', expires_in_hours: null, scope: { type: 'restricted', group_ids: [], log_ids: [LOG_B] },
+    label: '仅乙群一份日志', disclosure_mode: 'legacy', expires_in_hours: null,
+    scope: { type: 'restricted', group_ids: [], log_ids: [LOG_B] },
   }, 201);
   assert.equal(logLink.expires_at, null);
   assert.equal(logLink.scope_labels.logs[0].name, '保密副本');
@@ -334,14 +351,12 @@ test('MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤�
   const sse = await groupSession.stream;
   assert.equal(sse.status, 200);
   assert.match(sse.headers.get('content-type') ?? '', /^text\/event-stream\b/);
-  const tools = await groupSession.client.listTools(undefined, { timeout: REQUEST_TIMEOUT });
-  assert.deepEqual(tools.tools.map((tool) => tool.name).sort(), [
-    'get_log_messages', 'get_log_participants', 'get_recent_updates', 'list_logs', 'search_log_messages',
-  ]);
+  const tools = await listTools(groupSession.client);
+  assert.deepEqual(tools.tools.map((tool) => tool.name), ACTIONS);
   for (const tool of tools.tools) {
     assert.deepEqual(tool.annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
   }
-  const call = (session, name, args = {}) => session.client.callTool({ name, arguments: args }, undefined, { timeout: REQUEST_TIMEOUT });
+  const call = (session, name, args) => callTool(session.client, name, args);
   let groupCalls = 0;
   const succeed = async (session, name, args) => {
     const result = await call(session, name, args);
@@ -449,11 +464,231 @@ test('MCP 按群与日志隔离，链接收窄、停用、轮换和删除会撤�
   assert.equal((await succeed(logSession, 'list_logs')).structuredContent.total, 1);
 });
 
-test('本机调试入口启用时，用全量权限连接 MCP', { timeout: TEST_TIMEOUT }, async (t) => {
+test('本机调试入口默认以渐进式工具提供全量权限', { timeout: TEST_TIMEOUT }, async (t) => {
   const { connect } = await start(t, { enableUnauthLocalMcp: true });
   const { client } = await connect('/mcp');
   assert.equal(client.getServerVersion().name, 'sealdice-logs-mcp');
   assert.equal(client.getServerVersion().version, '1.0.0');
-  const result = await client.callTool({ name: 'list_logs', arguments: {} }, undefined, { timeout: REQUEST_TIMEOUT });
+  assert.deepEqual((await listTools(client)).tools.map(({ name }) => name), META_TOOLS);
+  assert.equal((await callTool(client, 'sealdice_discover')).structuredContent.scope.type, 'all');
+  const result = await callTool(client, 'sealdice_execute', { action: 'list_logs' });
   assert.equal(result.structuredContent.total, 4);
+});
+
+test('工具注册单测验证默认三元工具及初始上下文大小', { timeout: TEST_TIMEOUT }, async (t) => {
+  const { logsPath, dataPath } = createFixture(t);
+  const db = new SealDiceDb(logsPath, dataPath);
+  t.after(() => db.close());
+  async function readContext(mode) {
+    const server = createMcpServer(db, ALL_SCOPE, undefined, mode);
+    const client = new Client({ name: 'sealdice-tools-test', version: '1.0.0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    try {
+      await server.connect(serverTransport);
+      await client.connect(clientTransport, { timeout: REQUEST_TIMEOUT });
+      return { instructions: client.getInstructions(), listing: await listTools(client) };
+    } finally {
+      await client.close();
+    }
+  }
+  const [progressive, legacy] = await Promise.all([readContext(), readContext('legacy')]);
+  assert.deepEqual(progressive.listing.tools.map(({ name }) => name), META_TOOLS);
+  assert.deepEqual(legacy.listing.tools.map(({ name }) => name), ACTIONS);
+  for (const { annotations } of progressive.listing.tools) {
+    assert.deepEqual(annotations, { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false });
+  }
+  assert.equal(progressive.instructions, '先用 sealdice_discover 查看动作与授权范围，再用 sealdice_describe 取参数与游标规则，最后用 sealdice_execute 读取日志。');
+  const bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+  const contextBytes = ({ instructions, listing }) => bytes({ instructions, tools: listing.tools });
+  assert.ok(bytes(progressive.listing) < bytes(legacy.listing) * 0.65);
+  const progressiveBytes = contextBytes(progressive);
+  const legacyBytes = contextBytes(legacy);
+  assert.deepEqual(getDisclosureMetrics(), {
+    progressiveTools: 3, legacyTools: 5, progressiveBytes, legacyBytes,
+    estimatedSavedPercent: Math.round((1 - progressiveBytes / legacyBytes) * 10_000) / 100,
+  });
+  t.diagnostic(`tools/list：${bytes(legacy.listing)} → ${bytes(progressive.listing)} 字节，含初始化指引：${legacyBytes} → ${progressiveBytes} 字节`);
+});
+
+test('渐进式协议按需披露 Schema，并保留范围隔离、翻页、续读与译名', { timeout: TEST_TIMEOUT }, async (t) => {
+  const { api, login, connect, insertMessage } = await start(t);
+  const auth = await login();
+  await json(auth);
+  const cookie = cookieOf(auth);
+  const { item } = await json(await api('/links', {
+    method: 'POST', cookie, body: { label: '仅甲群', scope: { type: 'restricted', group_ids: [GROUP_A] } },
+  }), 201);
+  assert.equal(item.disclosure_mode, 'progressive');
+  const { item: legacyItem } = await json(await api('/links', {
+    method: 'POST', cookie, body: { label: '旧客户端', disclosure_mode: 'legacy' },
+  }), 201);
+  const { client } = await connect(new URL(item.url).pathname);
+  const { client: legacyClient } = await connect(new URL(legacyItem.url).pathname);
+  const legacy = await listTools(legacyClient);
+  const panel = await json(await api('/links', { cookie }));
+  assert.deepEqual(panel.disclosure, getDisclosureMetrics());
+
+  const discover = (args) => callTool(client, 'sealdice_discover', args).then(({ structuredContent }) => structuredContent);
+  const discovery = await discover();
+  assert.deepEqual(discovery.scope.group_ids, [GROUP_A]);
+  assert.deepEqual(discovery.scope.log_ids, []);
+  assert.match(discovery.scope.summary, /指定群/);
+  assert.doesNotMatch(JSON.stringify(discovery), /保密副本|OpenQQ-Group/);
+  assert.deepEqual(discovery.actions.map(({ action }) => action), ACTIONS);
+  assert.ok(discovery.actions.every((entry) => Object.keys(entry).length === 2 && entry.summary));
+  assert.deepEqual(discovery.guides.map(({ name }) => name), ['cursor_workflow', 'filters']);
+  assert.deepEqual((await discover({ query: 'GET_RECENT' })).actions.map(({ action }) => action), ['get_recent_updates']);
+
+  const describe = (args) => callTool(client, 'sealdice_describe', args).then(({ structuredContent }) => structuredContent);
+  const details = await describe({ actions: ['get_log_messages', 'get_recent_updates'], guide: 'cursor_workflow' });
+  assert.deepEqual(details.actions.map(({ action }) => action), ['get_log_messages', 'get_recent_updates']);
+  for (const { action, inputSchema, parameters, examples } of details.actions) {
+    assert.deepEqual(inputSchema, legacy.tools.find(({ name }) => name === action).inputSchema);
+    assert.deepEqual(Object.keys(parameters).sort(), Object.keys(inputSchema.properties).sort());
+    assert.ok(examples.some((example) => example.action === action && example.params.log_id));
+  }
+  assert.ok(details.guide.instructions.includes(legacyClient.getInstructions()));
+  const filters = await describe({ guide: 'filters' });
+  assert.deepEqual(filters.actions, []);
+  assert.match(filters.guide.instructions, /括号/);
+  for (const param of ['include_dice', 'start_time', 'end_time', 'last_minutes', 'speaker']) {
+    assert.ok(filters.guide.instructions.includes(param));
+  }
+
+  let reads = 0;
+  const execute = (action, params) => callTool(client, 'sealdice_execute', { action, params });
+  const read = async (action, params) => {
+    const result = await execute(action, params);
+    assert.notEqual(result.isError, true, JSON.stringify(result.content));
+    reads += 1;
+    return result.structuredContent;
+  };
+  const listed = await read('list_logs');
+  assert.deepEqual(listed.items.map(({ log_id }) => log_id), [LOG_A_HISTORY, LOG_A]);
+  const messageFilters = { log_id: listed.items[1].log_id, filter_mode: 'ic', include_dice: false };
+  const tail = await read('get_log_messages', { ...messageFilters, limit: 1 });
+  assert.deepEqual(tail.items.map(({ id }) => id), [16]);
+  assert.equal(tail.next_cursor_id, 18);
+  assert.equal(tail.has_older, true);
+  const older = await read('get_log_messages', { ...messageFilters, before_id: tail.first_id });
+  assert.deepEqual(older.items.map(({ id }) => id), [11]);
+
+  insertMessage({ id: 19, message: '（稍等）' });
+  insertMessage({ id: 20, message: '[CQ:reply,id=16](回来了)' });
+  const empty = await read('get_recent_updates', { log_id: LOG_A, since_id: tail.next_cursor_id });
+  assert.deepEqual(empty.items, []);
+  assert.equal(empty.next_cursor_id, 20);
+  assert.equal(empty.filtered_out.ooc, 2);
+  const hexId = 'AABBCCDDEEFF00112233445566778899';
+  insertMessage({ id: 22, nickname: '观测员', im_userid: `OpenQQ:400-${hexId}`, message: '找到路了' });
+  insertMessage({ id: 23, nickname: '向导', im_userid: 'QQ:123456789', message: '我来带路' });
+  insertMessage({ id: 24, message: `<@${hexId}> [CQ:at,qq=123456789] 看灯塔` });
+  const firstUpdate = await read('get_recent_updates', { log_id: LOG_A, since_id: empty.next_cursor_id, limit: 2 });
+  assert.deepEqual(firstUpdate.items.map(({ id }) => id), [22, 23]);
+  assert.equal(firstUpdate.has_newer, true);
+  const translated = '[@观测员] [@向导] 看灯塔';
+  const nextUpdate = await execute('get_recent_updates', { log_id: LOG_A, since_id: firstUpdate.next_cursor_id });
+  reads += 1;
+  assert.deepEqual(nextUpdate.structuredContent.items.map(({ id, message }) => [id, message]), [[24, translated]]);
+  assert.ok(nextUpdate.content[0].text.includes(translated));
+  assert.equal(nextUpdate.structuredContent.has_newer, false);
+  const search = await read('search_log_messages', { query: ' 观测员 ', context_lines: 1 });
+  assert.deepEqual(search.matches.map(({ message }) => message.id), [24]);
+  assert.equal((await read('get_log_participants', { log_id: LOG_A_HISTORY })).total, 1);
+
+  for (const [action, params] of [
+    ['get_log_messages', { log_id: LOG_B }], ['get_log_messages', { group_id: GROUP_B }],
+    ['get_recent_updates', { log_id: LOG_B, since_id: 0 }], ['get_log_participants', { log_id: 99999 }],
+  ]) {
+    const denied = await execute(action, params);
+    assert.equal(denied.isError, true);
+    assert.deepEqual(denied.content, [{ type: 'text', text: DENIED }]);
+    assert.equal(denied.structuredContent, undefined);
+  }
+  for (const [action, params] of [
+    ['get_log_messages', { log_id: '1' }], ['search_log_messages', { query: '  ' }],
+    ['get_log_participants', {}], ['constructor', {}],
+  ]) assert.equal((await execute(action, params)).isError, true);
+
+  await json(await api(`/links/${item.id}`, {
+    method: 'PATCH', cookie, body: { scope: { type: 'restricted', group_ids: [GROUP_A], log_ids: [LOG_B] } },
+  }));
+  assert.deepEqual((await discover()).scope.log_ids, [LOG_B]);
+  assert.equal((await read('get_log_messages', { log_id: LOG_B })).log.log_id, LOG_B);
+  assert.equal((await execute('get_log_messages', { log_id: LOG_B_EMPTY })).isError, true);
+  const recorded = await json(await api(`/links/${item.id}`, { cookie }));
+  assert.equal(recorded.item.call_count, reads);
+});
+
+test('旧链接缺省为渐进式，切换模式断开旧会话并持久化', { timeout: TEST_TIMEOUT }, async (t) => {
+  const stateDir = mkdtempSync(join(tmpdir(), 'sealdice-link-test-'));
+  t.after(() => rmSync(stateDir, { recursive: true, force: true }));
+  const id = 'lnk_000000000001';
+  const token = Buffer.alloc(32, 19).toString('base64url');
+  const timestamp = new Date().toISOString();
+  await writeAdminFile(join(stateDir, 'links.json'), JSON.stringify([{
+    id, token, label: '旧链接', enabled: true, scope: { type: 'all' },
+    created_at: timestamp, updated_at: timestamp, expires_at: null, last_used_at: null, call_count: 0,
+  }]));
+  const { defaultDisclosureMode } = readRuntimeConfig({ SEALDICE_LOGS_MCP_DISCLOSURE_MODE: 'legacy' });
+  assert.equal(defaultDisclosureMode, 'legacy');
+  const { api, fetch, login, connect } = await start(t, { stateDir, defaultDisclosureMode, enableUnauthLocalMcp: true });
+  assert.equal((await json(await fetch('/health'))).disclosureMode, 'legacy');
+  const { client: local } = await connect('/mcp');
+  assert.deepEqual((await listTools(local)).tools.map(({ name }) => name), ACTIONS);
+  const auth = await login();
+  await json(auth);
+  const cookie = cookieOf(auth);
+  const links = await json(await api('/links', { cookie }));
+  assert.equal(links.items[0].id, id);
+  assert.equal(links.items[0].disclosure_mode, 'progressive');
+  const preferred = await json(await api('/links', { method: 'POST', cookie, body: { label: '新链接' } }), 201);
+  assert.equal(preferred.item.disclosure_mode, 'progressive');
+  await json(await api('/links', { method: 'POST', cookie, body: { label: '无效模式', disclosure_mode: 'unknown' } }), 400);
+
+  const url = new URL(links.items[0].url);
+  const initial = await connect(url.pathname, { watchStream: true });
+  assert.deepEqual((await listTools(initial.client)).tools.map(({ name }) => name), META_TOOLS);
+  const sse = await initial.stream;
+  assert.equal(sse.status, 200);
+  const patchMode = (mode, status) => api(`/links/${id}`, { method: 'PATCH', cookie, body: { disclosure_mode: mode } })
+    .then((response) => json(response, status));
+  await patchMode(null, 400);
+  assert.deepEqual((await listTools(initial.client)).tools.map(({ name }) => name), META_TOOLS);
+  const { item: updated } = await patchMode('legacy');
+  assert.equal(updated.url, url.href);
+  assert.equal(updated.disclosure_mode, 'legacy');
+  await sse.text();
+  await json(await rpc(fetch, url.pathname, 'POST', initial.transport.sessionId), 404);
+  assert.equal((await LinkStore.open(stateDir)).getById(id).disclosure_mode, 'legacy');
+  const switched = await connect(url.pathname);
+  assert.deepEqual((await listTools(switched.client)).tools.map(({ name }) => name), ACTIONS);
+  assert.equal((await callTool(switched.client, 'list_logs')).structuredContent.total, 4);
+  const { item: restored } = await patchMode('progressive');
+  assert.equal(restored.disclosure_mode, 'progressive');
+  await json(await rpc(fetch, url.pathname, 'POST', switched.transport.sessionId), 404);
+  assert.deepEqual((await listTools((await connect(url.pathname)).client)).tools.map(({ name }) => name), META_TOOLS);
+  assert.deepEqual((await listTools(local)).tools.map(({ name }) => name), ACTIONS);
+});
+
+test('stdio 默认注册渐进式工具，环境变量可以切回 legacy', { timeout: TEST_TIMEOUT }, async (t) => {
+  const { logsPath, dataPath } = createFixture(t);
+  for (const [mode, expected] of [[undefined, META_TOOLS], ['legacy', ACTIONS]]) {
+    const client = new Client({ name: 'sealdice-stdio-test', version: '1.0.0' });
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [fileURLToPath(new URL('../dist/index.js', import.meta.url))],
+      env: {
+        SEALDICE_LOGS_DB: logsPath, SEALDICE_DATA_DB: dataPath,
+        ...(mode ? { SEALDICE_LOGS_MCP_DISCLOSURE_MODE: mode } : {}),
+      },
+      stderr: 'pipe',
+    });
+    try {
+      await client.connect(transport, { timeout: REQUEST_TIMEOUT });
+      assert.deepEqual((await listTools(client)).tools.map(({ name }) => name), expected);
+    } finally {
+      await client.close();
+    }
+  }
 });

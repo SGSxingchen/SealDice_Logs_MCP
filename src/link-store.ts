@@ -3,6 +3,9 @@ import { join } from 'node:path';
 import { prepareAdminDirectory, readAdminFile, SerializedWrites, writeAdminFile } from './admin-files.js';
 import { HttpError } from './errors.js';
 
+export type DisclosureMode = 'progressive' | 'legacy';
+export const DEFAULT_DISCLOSURE_MODE: DisclosureMode = 'progressive';
+
 export interface LinkScope {
   type: 'all' | 'restricted';
   group_ids: string[];
@@ -15,6 +18,7 @@ export interface McpLinkRecord {
   token: string;
   enabled: boolean;
   scope: LinkScope;
+  disclosure_mode?: DisclosureMode;
   created_at: string;
   updated_at: string;
   expires_at: string | null;
@@ -52,7 +56,7 @@ function copyScope(scope: LinkScope): LinkScope {
 }
 
 function copyRecord(item: McpLinkRecord): McpLinkRecord {
-  return { ...item, scope: copyScope(item.scope) };
+  return { ...item, scope: copyScope(item.scope), disclosure_mode: item.disclosure_mode ?? DEFAULT_DISCLOSURE_MODE };
 }
 
 function groupIdValid(value: unknown): value is string {
@@ -92,6 +96,11 @@ function parseEnabled(value: unknown): boolean {
   return value;
 }
 
+function parseDisclosureMode(value: unknown = DEFAULT_DISCLOSURE_MODE): DisclosureMode {
+  if (value === 'progressive' || value === 'legacy') return value;
+  throw new HttpError(400, 'disclosure_mode 必须是 progressive 或 legacy');
+}
+
 function expiresAt(hours: unknown, now: number): string | null {
   if (hours === undefined || hours === null) return null;
   if (typeof hours === 'number' && Number.isFinite(hours)) {
@@ -125,6 +134,7 @@ function loadRecords(raw: Buffer): { records: Map<string, McpLinkRecord>; import
       records.set(id, {
         id, token, created_at, updated_at, expires_at, last_used_at, call_count,
         label: parseLabel(item.label), enabled: parseEnabled(item.enabled), scope: parseScope(item.scope),
+        disclosure_mode: item.disclosure_mode === undefined ? undefined : parseDisclosureMode(item.disclosure_mode),
       });
       tokens.add(token);
     }
@@ -146,6 +156,7 @@ function newRecord(
   return {
     id, token, label: parseLabel(input.label), enabled: input.enabled === undefined ? true : parseEnabled(input.enabled),
     scope: input.scope === undefined ? copyScope(ALL_SCOPE) : parseScope(input.scope),
+    disclosure_mode: parseDisclosureMode(input.disclosure_mode),
     created_at: timestamp, updated_at: timestamp, expires_at: expiresAt(input.expires_in_hours, now),
     last_used_at: null, call_count: 0,
   };
@@ -236,6 +247,7 @@ export class LinkStore {
         label: input.label === undefined ? previous.label : parseLabel(input.label),
         enabled: input.enabled === undefined ? previous.enabled : parseEnabled(input.enabled),
         scope: input.scope === undefined ? previous.scope : parseScope(input.scope),
+        disclosure_mode: input.disclosure_mode === undefined ? previous.disclosure_mode : parseDisclosureMode(input.disclosure_mode),
         expires_at: input.expires_in_hours === undefined ? previous.expires_at : expiresAt(input.expires_in_hours, now),
         updated_at: new Date(now).toISOString(),
       };

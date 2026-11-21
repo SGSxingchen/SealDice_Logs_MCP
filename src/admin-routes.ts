@@ -4,6 +4,7 @@ import type { AdminAuth } from './admin-auth.js';
 import { SerializedWrites } from './admin-files.js';
 import { HttpError } from './errors.js';
 import { ALL_SCOPE, isLinkExpired, type LinkScope, type LinkStore, type McpLinkRecord } from './link-store.js';
+import { getDisclosureMetrics } from './mcp-tools.js';
 import { httpOrigin } from './runtime.js';
 import type { MessageOptions, SealDiceDb } from './sealdice-db.js';
 import { formatTranscript } from './transcript.js';
@@ -87,7 +88,7 @@ function needsRevocation(before: McpLinkRecord, after: McpLinkRecord): boolean {
     && (before.expires_at === null || Date.parse(after.expires_at) < Date.parse(before.expires_at));
   const now = Date.now();
   return !after.enabled || isLinkExpired(before, now) || isLinkExpired(after, now)
-    || expiryReduced || narrowed(before.scope, after.scope);
+    || before.disclosure_mode !== after.disclosure_mode || expiryReduced || narrowed(before.scope, after.scope);
 }
 
 function presentLinks(db: SealDiceDb, links: McpLinkRecord[], origin: string | null) {
@@ -190,7 +191,7 @@ export function mountAdminRoutes(app: Express, options: AdminOptions): void {
 
   api.get('/links', (req, res) => {
     const publicOrigin = origin(req);
-    res.json({ items: presentLinks(db, linkStore.list(), publicOrigin), publicOrigin });
+    res.json({ items: presentLinks(db, linkStore.list(), publicOrigin), publicOrigin, disclosure: getDisclosureMetrics() });
   });
   api.get('/links/:linkId', (req, res) => {
     const link = linkStore.getById(req.params.linkId);

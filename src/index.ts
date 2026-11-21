@@ -2,14 +2,15 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ALL_SCOPE } from './link-store.js';
 import { createMcpServer } from './mcp-tools.js';
-import { readDatabasePaths, registerShutdown } from './runtime.js';
+import { readDatabasePaths, readDisclosureMode, registerShutdown } from './runtime.js';
 import { SealDiceDb } from './sealdice-db.js';
 
 async function startStdioServer(): Promise<void> {
   const { logsPath, dataPath } = readDatabasePaths();
+  const disclosureMode = readDisclosureMode();
   const db = new SealDiceDb(logsPath, dataPath);
   try {
-    const server = createMcpServer(db, ALL_SCOPE);
+    const server = createMcpServer(db, ALL_SCOPE, undefined, disclosureMode);
     const transport = new StdioServerTransport();
     let stopping: Promise<void> | undefined;
     const close = () => stopping ??= (async () => {

@@ -1441,7 +1441,12 @@ function renderLinks() {
       scopeBadge.className = 'badge badge-neutral';
       scopeBadge.textContent = '全部日志';
     }
+    const modeBadge = document.createElement('span');
+    const isLegacy = link.disclosure_mode === 'legacy';
+    modeBadge.className = isLegacy ? 'badge badge-neutral' : 'badge badge-live';
+    modeBadge.textContent = isLegacy ? '平铺兼容' : '渐进式 3 元工具';
     titleWrap.appendChild(scopeBadge);
+    titleWrap.appendChild(modeBadge);
 
     const actions = document.createElement('div');
     actions.className = 'link-card-actions';
@@ -1554,6 +1559,11 @@ async function openLinkDialog(editingLink = null) {
   const keepOpt = expirySelect.querySelector('option[value="keep"]');
   keepOpt.hidden = !editingLink;
   expirySelect.value = editingLink ? 'keep' : 'never';
+
+  const disclosureSelect = $('link-disclosure-select');
+  if (disclosureSelect) {
+    disclosureSelect.value = editingLink?.disclosure_mode === 'legacy' ? 'legacy' : 'progressive';
+  }
 
   const scopeType = editingLink?.scope?.type === 'restricted' ? 'restricted' : 'all';
   document.querySelectorAll('input[name="scope_type"]').forEach((r) => {
@@ -1685,7 +1695,8 @@ async function submitLinkForm(event) {
   }
 
   const expiryVal = $('link-expiry-select').value;
-  const payload = { label, scope };
+  const disclosure_mode = $('link-disclosure-select')?.value === 'legacy' ? 'legacy' : 'progressive';
+  const payload = { label, scope, disclosure_mode };
   if (expiryVal === 'never') payload.expires_in_hours = null;
   else if (expiryVal !== 'keep') payload.expires_in_hours = Number(expiryVal);
 
