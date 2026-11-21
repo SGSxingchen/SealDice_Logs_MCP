@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <script>
+    try {
+      const saved = localStorage.getItem('sealdice-logs-color-scheme');
+      if (saved === 'light' || saved === 'dark') {
+        document.querySelector('meta[name="color-scheme"]').content = saved;
+      }
+    } catch {}
+  </script>
+  <title>海豹骰跑团日志与 MCP 分发台</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- 登录页 -->
+  <section id="login-view" class="login-shell" hidden>
+    <div class="login-card">
+      <div class="login-brand">
+        <div class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2 3 7v10l9 5 9-5V7l-9-5Z"/>
+            <path d="M12 22V12"/>
+            <path d="m21 7-9 5-9-5"/>
+            <circle cx="12" cy="7.2" r="1.1" fill="currentColor" stroke="none"/>
+          </svg>
+        </div>
+        <div>
+          <h1 class="login-title">海豹骰跑团日志台</h1>
+          <p class="login-subtitle">实时阅览跑团记录，按群/按团分发 MCP 接入链接</p>
+        </div>
+      </div>
+
+      <form id="login-form" class="login-form">
+        <label class="field">
+          <span class="field-label">管理员口令</span>
+          <input id="login-password" class="input" type="password" autocomplete="current-password" placeholder="请输入管理台口令" required>
+        </label>
+        <p id="login-error" class="form-error" role="alert" hidden></p>
+        <button id="login-submit" class="btn btn-primary btn-block" type="submit">进入日志台</button>
+      </form>
+      <p class="login-hint">会话采用加密安全 Cookie 保存，默认 7 天内免重复登录。</p>
+    </div>
+  </section>
+
+  <!-- 主应用 -->
+  <div id="app-shell" class="app-shell" hidden>
+    <header class="topbar">
+      <div class="topbar-left">
+        <button id="mobile-drawer-btn" class="icon-btn mobile-only" type="button" title="切换日志列表" aria-label="切换日志列表">
+          <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <line x1="4" y1="6" x2="20" y2="6"/>
+            <line x1="4" y1="12" x2="20" y2="12"/>
+            <line x1="4" y1="18" x2="20" y2="18"/>
+          </svg>
+        </button>
+        <div class="brand-inline">
+          <span class="brand-dot" aria-hidden="true"></span>
+          <span class="brand-name">海豹骰跑团日志</span>
+          <span class="brand-tag">只读实时</span>
+        </div>
+        <nav class="nav-tabs" aria-label="主功能切换">
+          <button class="tab-btn is-active" type="button" data-tab="reader">日志阅览</button>
+          <button class="tab-btn" type="button" data-tab="links">
+            MCP 链接
+            <span id="nav-links-badge" class="tab-badge">0</span>
+          </button>
+        </nav>
+      </div>
+
+      <div class="topbar-right">
+        <div id="recording-pill" class="status-pill" hidden title="当前海豹骰正在活跃记录的跑团数量">
+          <span class="pulse-dot" aria-hidden="true"></span>
+          <span id="recording-pill-text">0 个团记录中</span>
+        </div>
+        <button id="theme-toggle" class="icon-btn" type="button" aria-label="切换浅色或深色主题" title="切换浅色 / 深色主题">
+          <svg class="icon-sun" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2m0 16v2M4.93 4.93l1.41 1.41m11.32 11.32 1.41 1.41M2 12h2m16 0h2M4.93 19.07l1.41-1.41m11.32-11.32 1.41-1.41"/>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8Z"/>
+          </svg>
+          <span class="sr-only icon-sun">切换至浅色外观</span>
+          <span class="sr-only icon-moon">切换至深色外观</span>
+        </button>
+        <button id="logout-btn" class="btn btn-ghost btn-sm" type="button">退出</button>
+      </div>
+    </header>
+
+    <main class="main-area">
+      <!-- Tab 1: 跑团日志阅览 -->
+      <section id="tab-reader" class="tab-panel reader-layout">
+        <div id="sidebar-backdrop" class="sidebar-backdrop" hidden></div>
+        <aside id="log-sidebar" class="log-sidebar" aria-label="跑团日志列表">
+          <div class="sidebar-head">
+            <div class="search-box">
+              <svg class="search-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="7"/>
+                <path d="m20 20-3.5-3.5"/>
+              </svg>
+              <input id="log-search-input" class="input input-search" type="search" placeholder="搜索日志名、群名或群号…">
+            </div>
+            <div class="sidebar-filters">
+              <select id="group-filter-select" class="select select-compact" aria-label="按群筛选">
+                <option value="">全部群聊</option>
+              </select>
+              <button id="active-only-btn" class="chip-toggle" type="button" aria-pressed="false" title="仅显示海豹骰当前开启记录的日志">
+                <span class="chip-dot" aria-hidden="true"></span>
+                记录中
+              </button>
+            </div>
+            <div class="sidebar-meta">
+              <span id="sidebar-count-text">正在加载日志…</span>
+              <button id="refresh-logs-btn" class="btn-inline" type="button">刷新目录</button>
+            </div>
+          </div>
+
+          <div id="log-list" class="log-list" role="listbox" aria-label="日志目录"></div>
+
+          <div id="log-list-footer" class="sidebar-foot" hidden>
+            <button id="load-more-logs-btn" class="btn btn-secondary btn-sm btn-block" type="button">加载更多历史日志</button>
+          </div>
+        </aside>
+
+        <section class="reader-stage" aria-label="跑团对话内容">
+          <!-- 未选日志空状态 -->
+          <div id="reader-empty" class="empty-stage">
+            <div class="empty-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8Z"/>
+                <path d="M14 2v6h6"/>
+                <path d="M8 13h8M8 17h6"/>
+              </svg>
+            </div>
+            <h2>选择一份跑团日志开始阅览</h2>
+            <p>支持按场内（IC）、场外（OOC）和掷骰检定实时筛选，随时同步最新发言。</p>
+          </div>
+
+          <!-- 已选日志工作区 -->
+          <div id="reader-active" class="reader-active" hidden>
+            <div class="reader-sticky-head">
+              <div class="reader-title-row">
+                <div class="reader-title-info">
+                  <div class="reader-title-line">
+                    <h2 id="active-log-name" class="reader-title">日志名称</h2>
+                    <span id="active-log-live" class="badge badge-live" hidden>记录中</span>
+                    <span id="active-log-system" class="badge badge-neutral" hidden></span>
+                  </div>
+                  <div class="reader-subline">
+                    <span id="active-log-group"></span>
+                    <span class="dot-sep" aria-hidden="true">·</span>
+                    <span id="active-log-stats"></span>
+                  </div>
+                </div>
+                <div class="reader-actions">
+                  <button id="auto-poll-btn" class="btn btn-secondary btn-sm" type="button" aria-pressed="false" title="每 5 秒静默增量拉取最新消息">
+                    <span class="live-indicator" aria-hidden="true"></span>
+                    自动追踪
+                  </button>
+                  <button id="refresh-messages-btn" class="btn btn-secondary btn-sm" type="button">刷新最新</button>
+                  <button id="participants-btn" class="btn btn-secondary btn-sm" type="button">角色统计</button>
+                  <button id="copy-filtered-btn" class="btn btn-secondary btn-sm" type="button">复制文本</button>
+                  <button id="export-txt-btn" class="btn btn-primary btn-sm" type="button">导出 TXT</button>
+                </div>
+              </div>
+
+              <div class="filter-bar">
+                <div class="segmented" role="group" aria-label="场内场外筛选">
+                  <button class="seg-btn is-active" type="button" data-filter-mode="all" aria-pressed="true">全部</button>
+                  <button class="seg-btn" type="button" data-filter-mode="ic" aria-pressed="false">仅场内</button>
+                  <button class="seg-btn" type="button" data-filter-mode="ooc" aria-pressed="false">仅场外</button>
+                </div>
+
+                <button id="include-dice-btn" class="chip-toggle is-active" type="button" aria-pressed="true" title="开关掷骰指令与海豹检定结果">
+                  含掷骰检定
+                </button>
+
+                <select id="speaker-filter-select" class="select select-compact filter-speaker" aria-label="按发言人筛选">
+                  <option value="">全部发言人</option>
+                </select>
+
+                <select id="time-preset-select" class="select select-compact filter-time" aria-label="按时间范围筛选">
+                  <option value="all">全部时间</option>
+                  <option value="30">最近 30 分钟</option>
+                  <option value="120">最近 2 小时</option>
+                  <option value="today">今天</option>
+                  <option value="custom">自定义时间段…</option>
+                </select>
+
+                <div class="search-box filter-msg-search">
+                  <svg class="search-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="7"/>
+                    <path d="m20 20-3.5-3.5"/>
+                  </svg>
+                  <input id="msg-search-input" class="input input-search input-compact" type="search" placeholder="搜台词 / 线索…">
+                </div>
+              </div>
+
+              <div id="custom-time-row" class="custom-time-row" hidden>
+                <label class="inline-time-field">
+                  <span>起始</span>
+                  <input id="custom-start-input" class="input input-compact" type="datetime-local">
+                </label>
+                <label class="inline-time-field">
+                  <span>截止</span>
+                  <input id="custom-end-input" class="input input-compact" type="datetime-local">
+                </label>
+                <button id="apply-custom-time-btn" class="btn btn-primary btn-sm" type="button">应用时间段</button>
+                <button id="clear-custom-time-btn" class="btn btn-ghost btn-sm" type="button">清除</button>
+              </div>
+            </div>
+
+            <div id="message-scroll" class="message-scroll">
+              <div id="load-older-wrap" class="load-older-wrap" hidden>
+                <button id="load-older-btn" class="btn btn-secondary btn-sm" type="button">加载更早记录</button>
+              </div>
+
+              <div id="message-list" class="message-list" aria-live="off"></div>
+
+              <div id="message-empty" class="message-empty" hidden>
+                <p>当前筛选条件下暂无符合的消息。</p>
+                <button id="reset-msg-filters-btn" class="btn btn-secondary btn-sm" type="button">重置筛选条件</button>
+              </div>
+            </div>
+
+            <div class="reader-statusbar">
+              <div class="statusbar-left">
+                <span id="statusbar-summary">已加载 0 条</span>
+                <span id="statusbar-filtered" class="muted-text"></span>
+              </div>
+              <div class="statusbar-right">
+                <span id="statusbar-cursor" class="cursor-pill" title="AI 增量拉取时使用的最新游标 ID" hidden></span>
+                <button id="jump-bottom-btn" class="btn-inline" type="button" hidden>跳至最新</button>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+
+      <!-- Tab 2: MCP 链接分发与分级授权 -->
+      <section id="tab-links" class="tab-panel links-panel" hidden>
+        <div class="stats-grid" id="overview-stats-grid">
+          <div class="stat-card">
+            <span class="stat-label">跑团日志总数</span>
+            <strong id="stat-total-logs" class="stat-value">-</strong>
+            <span id="stat-active-recording" class="stat-sub">载入中…</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">累计归档消息</span>
+            <strong id="stat-total-messages" class="stat-value">-</strong>
+            <span id="stat-group-count" class="stat-sub">-</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">活跃 MCP 链接</span>
+            <strong id="stat-enabled-links" class="stat-value">-</strong>
+            <span id="stat-total-links" class="stat-sub">-</span>
+          </div>
+          <div class="stat-card">
+            <span class="stat-label">MCP 累计调用</span>
+            <strong id="stat-total-calls" class="stat-value">-</strong>
+            <span id="stat-latest-activity" class="stat-sub">-</span>
+          </div>
+        </div>
+
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">MCP 接入链接与权限范围</h2>
+            <p class="section-desc">每条链接拥有独立加密令牌，可设为「全部日志」或限定只看指定群/跑团日志；修改范围或停用后立即生效。</p>
+          </div>
+          <button id="create-link-btn" class="btn btn-primary" type="button">新建 MCP 链接</button>
+        </div>
+
+        <div id="links-list" class="links-list"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- 弹窗 1: 新建 / 编辑 MCP 链接 -->
+  <dialog id="link-dialog" class="modal-dialog modal-lg" closedby="any" aria-labelledby="link-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-sticky-head">
+        <div>
+          <h3 id="link-dialog-title" class="modal-title">新建 MCP 链接</h3>
+          <p id="link-dialog-subtitle" class="modal-subtitle">为自己、队友或特定跑团工作流签发独立接入地址</p>
+        </div>
+        <button class="icon-btn" type="button" data-close-dialog="link-dialog" aria-label="关闭窗口">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </header>
+
+      <form id="link-form" class="modal-body">
+        <div class="form-row-2">
+          <label class="field">
+            <span class="field-label">链接备注名称 *</span>
+            <input id="link-label-input" class="input" type="text" maxlength="80" placeholder="例如：周六暗影团 - Cherry Studio" required>
+          </label>
+
+          <label class="field">
+            <span class="field-label">有效期</span>
+            <select id="link-expiry-select" class="select">
+              <option value="keep" hidden>保持当前有效期不变</option>
+              <option value="never">长期有效</option>
+              <option value="24">24 小时后过期</option>
+              <option value="168">7 天后过期</option>
+              <option value="720">30 天后过期</option>
+            </select>
+          </label>
+        </div>
+
+        <fieldset class="scope-fieldset">
+          <legend class="field-label">日志访问权限范围</legend>
+          <div class="scope-mode-cards">
+            <label class="scope-mode-card">
+              <input type="radio" name="scope_type" value="all" checked>
+              <div>
+                <strong>全部日志</strong>
+                <span>可读取海豹骰全部群与跑团日志，适合本人全局跑团助手</span>
+              </div>
+            </label>
+            <label class="scope-mode-card">
+              <input type="radio" name="scope_type" value="restricted">
+              <div>
+                <strong>限定群或日志</strong>
+                <span>仅能看到勾选项，防串团、不泄露其他群记录</span>
+              </div>
+            </label>
+          </div>
+        </fieldset>
+
+        <!-- 仅在选择「限定群或日志」时展开 -->
+        <div id="scope-picker-section" class="scope-picker" hidden>
+          <div class="scope-picker-tabs" role="tablist" aria-label="选择授权对象类型">
+            <button class="picker-tab is-active" type="button" data-picker-tab="groups">
+              按群授权 <span id="selected-groups-count" class="mini-badge">0</span>
+            </button>
+            <button class="picker-tab" type="button" data-picker-tab="logs">
+              按单份日志授权 <span id="selected-logs-count" class="mini-badge">0</span>
+            </button>
+            <button id="clear-scope-btn" class="btn-inline picker-clear" type="button">清空已选</button>
+          </div>
+
+          <div class="scope-picker-search">
+            <input id="scope-search-input" class="input input-compact" type="search" placeholder="输入群名、群号或日志名快速筛选…">
+          </div>
+
+          <div id="scope-groups-list" class="scope-check-list"></div>
+          <div id="scope-logs-list" class="scope-check-list" hidden></div>
+
+          <p class="scope-help">只要满足“所属群在授权列表中”或“该日志在授权列表中”任一条件即允许访问；至少勾选 1 项。</p>
+        </div>
+
+        <p id="link-form-error" class="form-error" role="alert" hidden></p>
+
+        <footer class="modal-actions">
+          <button class="btn btn-secondary" type="button" data-close-dialog="link-dialog">取消</button>
+          <button id="link-form-submit" class="btn btn-primary" type="submit">保存并签发链接</button>
+        </footer>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- 弹窗 2: 客户端接入指引 -->
+  <dialog id="guide-dialog" class="modal-dialog modal-md" closedby="any" aria-labelledby="guide-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-sticky-head">
+        <div>
+          <h3 id="guide-dialog-title" class="modal-title">客户端接入指引</h3>
+          <p id="guide-dialog-subtitle" class="modal-subtitle">支持 Cherry Studio、Claude、Cursor 及标准 Streamable HTTP 客户端</p>
+        </div>
+        <button class="icon-btn" type="button" data-close-dialog="guide-dialog" aria-label="关闭窗口">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div class="modal-body guide-body">
+        <div class="guide-block">
+          <div class="guide-block-head">
+            <span>接入地址（传输类型选：可流式的 HTTP / Streamable HTTP）</span>
+            <button id="guide-copy-url" class="btn-inline" type="button">复制地址</button>
+          </div>
+          <code id="guide-url-text" class="code-line"></code>
+        </div>
+
+        <div class="guide-block">
+          <div class="guide-block-head">
+            <span>通用 MCP JSON 配置示例</span>
+            <button id="guide-copy-json" class="btn-inline" type="button">复制 JSON</button>
+          </div>
+          <pre id="guide-json-code" class="code-block"></pre>
+        </div>
+
+        <div class="guide-tips">
+          <strong>推荐给 AI 的跑团配合方式：</strong>
+          <ul>
+            <li>开场先让 AI 调用 <code>list_logs</code> 找到目标跑团日志，并用 <code>get_log_messages</code> 拉取最近 50 条场内记录（<code>filter_mode: "ic"</code>）。</li>
+            <li>后续每轮推进只需调用 <code>get_recent_updates</code> 并传入上次返回的 <code>next_cursor_id</code>，即可增量只读最新发言，不重复不漏话。</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- 弹窗 3: 参团角色统计 -->
+  <dialog id="participants-dialog" class="modal-dialog modal-md" closedby="any" aria-labelledby="participants-dialog-title">
+    <div class="modal-shell">
+      <header class="modal-sticky-head">
+        <div>
+          <h3 id="participants-dialog-title" class="modal-title">参团角色与发言分布</h3>
+          <p id="participants-dialog-subtitle" class="modal-subtitle">点击任意角色可直接筛选其台词</p>
+        </div>
+        <button class="icon-btn" type="button" data-close-dialog="participants-dialog" aria-label="关闭窗口">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <path d="M18 6 6 18M6 6l12 12"/>
+          </svg>
+        </button>
+      </header>
+      <div class="modal-body">
+        <div id="participants-breakdown" class="breakdown-bar"></div>
+        <div id="participants-list" class="participants-list"></div>
+      </div>
+    </div>
+  </dialog>
+
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
